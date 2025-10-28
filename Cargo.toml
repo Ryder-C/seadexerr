@@ -1,0 +1,19 @@
+[package]
+name = "seadexer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0"
+axum = { version = "0.7", features = ["macros"] }
+quick-xml = "0.31"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_with = "3.11"
+thiserror = "1.0"
+time = { version = "0.3", features = ["formatting", "parsing"] }
+tokio = { version = "1.38", features = ["macros", "rt-multi-thread"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+url = "2.5"
