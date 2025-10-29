@@ -15,15 +15,13 @@ use url::Url;
 
 use crate::mapping::MappingError;
 use crate::releases::{ReleasesError, Torrent};
-use crate::torznab::{
-    self, ChannelMetadata, TorznabAttr, TorznabCategoryRef, TorznabEnclosure, TorznabItem,
-};
+use crate::torznab::{self, ChannelMetadata, TorznabItem};
 use crate::{AppState, SharedAppState};
 
 pub fn router(state: SharedAppState) -> Router {
     Router::new()
         .route("/health", get(health))
-        .route("/torznab/api", get(torznab_handler))
+        .route("/api", get(torznab_handler))
         .with_state(state)
 }
 
@@ -36,7 +34,6 @@ async fn health() -> impl IntoResponse {
 struct TorznabQuery {
     #[serde(rename = "t")]
     operation: Option<String>,
-    q: Option<String>,
     cat: Option<String>,
     limit: Option<usize>,
     offset: Option<usize>,
@@ -129,24 +126,6 @@ async fn respond_generic_search(
         .min(state.config.default_limit);
     let offset = query.offset.unwrap_or(0);
 
-    if query
-        .q
-        .as_deref()
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false)
-    {
-        debug!(
-            limit,
-            offset, "torznab search received unsupported q parameter; returning empty set"
-        );
-        let xml = torznab::render_feed(&metadata, &[], offset, 0)?;
-        return Ok((
-            [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
-            xml,
-        )
-            .into_response());
-    }
-
     if !category_filter_matches(&query.cat) {
         debug!(
             limit,
@@ -211,24 +190,6 @@ async fn respond_tv_search(state: &AppState, query: &TorznabQuery) -> Result<Res
         .min(state.config.default_limit);
 
     let offset = query.offset.unwrap_or(0);
-
-    if query
-        .q
-        .as_deref()
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false)
-    {
-        debug!(
-            limit,
-            offset, "tvsearch received unsupported q parameter; returning empty feed"
-        );
-        let xml = torznab::render_feed(&metadata, &[], offset, 0)?;
-        return Ok((
-            [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
-            xml,
-        )
-            .into_response());
-    }
 
     let tvdb_id = match query.tvdb_identifier() {
         Some(id) => id,
@@ -333,72 +294,31 @@ fn build_channel_metadata(state: &AppState) -> Result<ChannelMetadata, HttpError
     };
 
     let site_link = base.clone();
-    let api_link = base
-        .join("torznab/api")
-        .map_err(|err| HttpError::BaseUrl(err.to_string()))?;
-
     Ok(ChannelMetadata {
         title: state.config.application_title.clone(),
         description: state.config.application_description.clone(),
         site_link: site_link.to_string(),
-        api_link: api_link.to_string(),
     })
 }
 
 fn map_torrent(torrent: crate::releases::Torrent) -> TorznabItem {
-    let mut attributes = Vec::new();
-
-    let primary_category_id = torznab::ANIME_CATEGORY.id;
-    let sub_category_id = torznab::ANIME_CATEGORY
-        .subcategories
-        .get(0)
-        .map(|sub| sub.id)
-        .unwrap_or(primary_category_id);
-
-    if let Some(seeders) = torrent.seeders {
-        attributes.push(TorznabAttr {
-            name: "seeders".to_string(),
-            value: seeders.to_string(),
-        });
-    }
-
-    if let Some(leechers) = torrent.leechers {
-        attributes.push(TorznabAttr {
-            name: "peers".to_string(),
-            value: (torrent.seeders.unwrap_or(0) as u64 + leechers as u64).to_string(),
-        });
-    }
-
-    attributes.push(TorznabAttr {
-        name: "category".to_string(),
-        value: primary_category_id.to_string(),
-    });
-    attributes.push(TorznabAttr {
-        name: "category".to_string(),
-        value: sub_category_id.to_string(),
-    });
-
-    attributes.push(TorznabAttr {
-        name: "type".to_string(),
-        value: "series".to_string(),
-    });
-
-    let enclosure = TorznabEnclosure {
-        url: torrent.download_url.clone(),
-        length: torrent.size_bytes,
-        mime_type: "application/x-bittorrent".to_string(),
-    };
+    let crate::releases::Torrent {
+        id,
+        download_url,
+        info_hash,
+        published,
+        size_bytes,
+    } = torrent;
 
     TorznabItem {
-        title: torrent.title,
-        guid: torrent.id,
-        guid_is_permalink: false,
-        link: torrent.download_url,
-        comments: torrent.comments,
-        description: torrent.description,
-        published: torrent.published,
-        attributes,
-        enclosure: Some(enclosure),
+        title: format!("Torrent {}", id),
+        guid: id,
+        link: download_url,
+        published,
+        size_bytes,
+        info_hash,
+        seeders: 100,
+        leechers: 100,
     }
 }
 

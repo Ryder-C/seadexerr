@@ -1,5 +1,5 @@
 use quick_xml::Writer;
-use quick_xml::events::{BytesCData, BytesDecl, BytesEnd, BytesStart, BytesText, Event};
+use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc2822};
 
@@ -8,33 +8,18 @@ pub struct ChannelMetadata {
     pub title: String,
     pub description: String,
     pub site_link: String,
-    pub api_link: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct TorznabItem {
     pub title: String,
     pub guid: String,
-    pub guid_is_permalink: bool,
     pub link: String,
-    pub comments: Option<String>,
-    pub description: Option<String>,
     pub published: Option<OffsetDateTime>,
-    pub attributes: Vec<TorznabAttr>,
-    pub enclosure: Option<TorznabEnclosure>,
-}
-
-#[derive(Debug, Clone)]
-pub struct TorznabAttr {
-    pub name: String,
-    pub value: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct TorznabEnclosure {
-    pub url: String,
-    pub length: Option<u64>,
-    pub mime_type: String,
+    pub size_bytes: Option<u64>,
+    pub info_hash: Option<String>,
+    pub seeders: u32,
+    pub leechers: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -138,20 +123,15 @@ pub fn render_caps(metadata: &ChannelMetadata) -> Result<String, TorznabBuildErr
 pub fn render_feed(
     metadata: &ChannelMetadata,
     items: &[TorznabItem],
-    offset: usize,
-    total: usize,
+    _offset: usize,
+    _total: usize,
 ) -> Result<String, TorznabBuildError> {
     let mut writer = Writer::new_with_indent(Vec::new(), b' ', 2);
     writer.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
 
     let mut rss = BytesStart::new("rss");
     rss.push_attribute(("version", "2.0"));
-    rss.push_attribute(("xmlns:atom", "http://www.w3.org/2005/Atom"));
     rss.push_attribute(("xmlns:torznab", "http://torznab.com/schemas/2015/feed"));
-    rss.push_attribute((
-        "xmlns:newznab",
-        "http://www.newznab.com/DTD/2010/feeds/attributes/",
-    ));
     writer.write_event(Event::Start(rss))?;
 
     writer.write_event(Event::Start(BytesStart::new("channel")))?;
@@ -159,65 +139,40 @@ pub fn render_feed(
     write_text_element(&mut writer, "description", &metadata.description)?;
     write_text_element(&mut writer, "link", &metadata.site_link)?;
 
-    let mut atom_link = BytesStart::new("atom:link");
-    atom_link.push_attribute(("href", metadata.api_link.as_str()));
-    atom_link.push_attribute(("rel", "self"));
-    atom_link.push_attribute(("type", "application/rss+xml"));
-    writer.write_event(Event::Empty(atom_link))?;
-
-    let offset_str = offset.to_string();
-    let total_str = total.to_string();
-    let mut response_el = BytesStart::new("newznab:response");
-    response_el.push_attribute(("offset", offset_str.as_str()));
-    response_el.push_attribute(("total", total_str.as_str()));
-    writer.write_event(Event::Empty(response_el))?;
-
     for item in items.iter() {
         writer.write_event(Event::Start(BytesStart::new("item")))?;
         write_text_element(&mut writer, "title", &item.title)?;
-
-        let mut guid_el = BytesStart::new("guid");
-        let is_permalink = if item.guid_is_permalink {
-            "true"
-        } else {
-            "false"
-        };
-        guid_el.push_attribute(("isPermaLink", is_permalink));
-        writer.write_event(Event::Start(guid_el))?;
-        writer.write_event(Event::Text(BytesText::new(&item.guid)))?;
-        writer.write_event(Event::End(BytesEnd::new("guid")))?;
-
+        write_text_element(&mut writer, "guid", &item.guid)?;
         write_text_element(&mut writer, "link", &item.link)?;
-
-        if let Some(comments) = item.comments.as_deref() {
-            write_text_element(&mut writer, "comments", comments)?;
-        }
-
-        if let Some(description) = item.description.as_deref() {
-            write_cdata_element(&mut writer, "description", description)?;
-        }
 
         if let Some(published) = item.published {
             let formatted = published.format(&Rfc2822)?;
             write_text_element(&mut writer, "pubDate", &formatted)?;
         }
 
-        if let Some(enclosure) = item.enclosure.clone() {
-            let mut enclosure_el = BytesStart::new("enclosure");
-            enclosure_el.push_attribute(("url", enclosure.url.as_str()));
-            enclosure_el.push_attribute(("type", enclosure.mime_type.as_str()));
-            if let Some(length) = enclosure.length {
-                enclosure_el.push_attribute(("length", length.to_string().as_str()));
-            }
-            writer.write_event(Event::Empty(enclosure_el))?;
+        if let Some(size) = item.size_bytes {
+            write_text_element(&mut writer, "size", &size.to_string())?;
         }
 
-        for attr in item.attributes.clone() {
-            let mut attr_el = BytesStart::new("torznab:attr");
-            attr_el.push_attribute(("name", attr.name.as_str()));
-            attr_el.push_attribute(("value", attr.value.as_str()));
-            writer.write_event(Event::Empty(attr_el))?;
+        if let Some(info_hash) = item.info_hash.as_deref() {
+            write_text_element(&mut writer, "infohash", info_hash)?;
         }
+
+        let mut enclosure = BytesStart::new("enclosure");
+        enclosure.push_attribute(("url", item.link.as_str()));
+        enclosure.push_attribute(("type", "application/x-bittorrent"));
+        if let Some(size) = item.size_bytes {
+            let length = size.to_string();
+            enclosure.push_attribute(("length", length.as_str()));
+        }
+        writer.write_event(Event::Empty(enclosure))?;
+
+        write_attr(&mut writer, "category", &ANIME_CATEGORY.id.to_string())?;
+        if let Some(sub) = ANIME_CATEGORY.subcategories.first() {
+            write_attr(&mut writer, "category", &sub.id.to_string())?;
+        }
+        write_attr(&mut writer, "seeders", &item.seeders.to_string())?;
+        write_attr(&mut writer, "leechers", &item.leechers.to_string())?;
 
         writer.write_event(Event::End(BytesEnd::new("item")))?;
     }
@@ -239,13 +194,14 @@ fn write_text_element(
     Ok(())
 }
 
-fn write_cdata_element(
+fn write_attr(
     writer: &mut Writer<Vec<u8>>,
     name: &str,
     value: &str,
 ) -> Result<(), quick_xml::Error> {
-    writer.write_event(Event::Start(BytesStart::new(name)))?;
-    writer.write_event(Event::CData(BytesCData::new(value)))?;
-    writer.write_event(Event::End(BytesEnd::new(name)))?;
+    let mut attr = BytesStart::new("torznab:attr");
+    attr.push_attribute(("name", name));
+    attr.push_attribute(("value", value));
+    writer.write_event(Event::Empty(attr))?;
     Ok(())
 }

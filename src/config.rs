@@ -14,6 +14,8 @@ pub struct AppConfig {
     pub application_title: String,
     pub application_description: String,
     pub default_limit: usize,
+    pub sonarr_url: String,
+    pub sonarr_api_key: String,
 }
 
 impl AppConfig {
@@ -63,6 +65,12 @@ impl AppConfig {
             .filter(|value| *value > 0)
             .unwrap_or(100);
 
+        let sonarr_url =
+            env::var("SONARR_URL").unwrap_or_else(|_| "http://localhost:8989".to_string());
+
+        let sonarr_api_key =
+            env::var("SONARR_API_KEY").context("Missing SONARR_API_KEY variable")?;
+
         Ok(Self {
             listen_addr,
             public_base_url,
@@ -73,6 +81,8 @@ impl AppConfig {
             application_title,
             application_description,
             default_limit,
+            sonarr_url,
+            sonarr_api_key,
         })
     }
 }
