@@ -13,10 +13,10 @@ use thiserror::Error;
 use tracing::{debug, info};
 use url::Url;
 
-use crate::mapping::MappingError;
 use crate::releases::{ReleasesError, Torrent};
 use crate::torznab::{self, ChannelMetadata, TorznabItem};
 use crate::{AppState, SharedAppState};
+use crate::{mapping::MappingError, sonarr::SonarrError};
 
 pub fn router(state: SharedAppState) -> Router {
     Router::new()
@@ -223,6 +223,16 @@ async fn respond_tv_search(state: &AppState, query: &TorznabQuery) -> Result<Res
         }
     };
 
+    debug!(tvdb_id, "resolving title from sonarr");
+
+    let title = state
+        .sonarr
+        .resolve_name(tvdb_id)
+        .await
+        .map_err(HttpError::Sonarr)?;
+
+    debug!(tvdb_id, %title, "resolved series title from sonarr");
+
     debug!(tvdb_id, season, limit, "resolving plexanibridge mapping");
 
     let anilist_id = state
@@ -365,6 +375,8 @@ pub enum HttpError {
     Releases(#[from] ReleasesError),
     #[error(transparent)]
     Torznab(#[from] torznab::TorznabBuildError),
+    #[error(transparent)]
+    Sonarr(#[from] SonarrError),
 }
 
 impl IntoResponse for HttpError {
@@ -393,6 +405,11 @@ impl IntoResponse for HttpError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Cow::from("Failed to render torznab payload"),
             ),
+            HttpError::Sonarr(SonarrError::Url(_)) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Cow::from("Failed to construct Sonarr request"),
+            ),
+            HttpError::Sonarr(_) => (StatusCode::BAD_GATEWAY, Cow::from("Failed to query Sonarr")),
         };
 
         tracing::error!("torznab handler error: {self}");

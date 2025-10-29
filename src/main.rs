@@ -2,6 +2,7 @@ mod config;
 mod http;
 mod mapping;
 mod releases;
+mod sonarr;
 mod torznab;
 
 use std::sync::Arc;
@@ -13,10 +14,12 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 use crate::config::AppConfig;
 use crate::mapping::PlexAniBridgeClient;
 use crate::releases::ReleasesClient;
+use crate::sonarr::SonarrClient;
 
 #[derive(Clone)]
 pub struct AppState {
     pub config: AppConfig,
+    pub sonarr: SonarrClient,
     pub releases: ReleasesClient,
     pub mappings: PlexAniBridgeClient,
 }
@@ -36,6 +39,13 @@ async fn main() -> anyhow::Result<()> {
     )
     .context("failed to construct releases.moe client")?;
 
+    let sonarr = SonarrClient::new(
+        config.sonarr_url.clone(),
+        config.sonarr_api_key.clone(),
+        config.sonarr_timeout,
+    )
+    .context("failed to construct Sonarr client")?;
+
     let mappings = PlexAniBridgeClient::new(
         config.mapping_base_url.clone(),
         config.mapping_timeout,
@@ -45,6 +55,7 @@ async fn main() -> anyhow::Result<()> {
 
     let state = Arc::new(AppState {
         config,
+        sonarr,
         releases,
         mappings,
     });

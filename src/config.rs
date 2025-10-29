@@ -14,8 +14,9 @@ pub struct AppConfig {
     pub application_title: String,
     pub application_description: String,
     pub default_limit: usize,
-    pub sonarr_url: String,
+    pub sonarr_url: Url,
     pub sonarr_api_key: String,
+    pub sonarr_timeout: Duration,
 }
 
 impl AppConfig {
@@ -65,11 +66,18 @@ impl AppConfig {
             .filter(|value| *value > 0)
             .unwrap_or(100);
 
-        let sonarr_url =
-            env::var("SONARR_URL").unwrap_or_else(|_| "http://localhost:8989".to_string());
+        let raw_sonarr_url =
+            env::var("SONARR_BASE_URL").unwrap_or_else(|_| "http://localhost:8989".to_string());
+        let sonarr_url = parse_root_url(&raw_sonarr_url, "SONARR_BASE_URL")?;
 
         let sonarr_api_key =
             env::var("SONARR_API_KEY").context("Missing SONARR_API_KEY variable")?;
+
+        let sonarr_timeout_secs = env::var("SONARR_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(10);
+        let sonarr_timeout = Duration::from_secs(sonarr_timeout_secs);
 
         Ok(Self {
             listen_addr,
@@ -83,6 +91,7 @@ impl AppConfig {
             default_limit,
             sonarr_url,
             sonarr_api_key,
+            sonarr_timeout,
         })
     }
 }
