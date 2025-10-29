@@ -10,10 +10,14 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 use thiserror::Error;
+use tracing::{debug, info};
 use url::Url;
 
-use crate::releases::{ReleasesError, TorrentSearchRequest};
-use crate::torznab::{self, ChannelMetadata, TorznabAttr, TorznabEnclosure, TorznabItem};
+use crate::mapping::MappingError;
+use crate::releases::{ReleasesError, Torrent};
+use crate::torznab::{
+    self, ChannelMetadata, TorznabAttr, TorznabCategoryRef, TorznabEnclosure, TorznabItem,
+};
 use crate::{AppState, SharedAppState};
 
 pub fn router(state: SharedAppState) -> Router {
@@ -36,14 +40,16 @@ struct TorznabQuery {
     cat: Option<String>,
     limit: Option<usize>,
     offset: Option<usize>,
+    #[allow(dead_code)]
     imdbid: Option<String>,
     season: Option<String>,
-    ep: Option<String>,
+    #[serde(rename = "tvdbid")]
+    tvdb_id: Option<String>,
 }
 
 impl TorznabQuery {
     fn operation(&self) -> TorznabOperation<'_> {
-        match self.operation.as_deref().unwrap_or("search") {
+        match self.operation.as_deref().unwrap_or("tvsearch") {
             "caps" => TorznabOperation::Caps,
             "search" => TorznabOperation::Search,
             "tvsearch" | "tv-search" => TorznabOperation::TvSearch,
@@ -51,8 +57,16 @@ impl TorznabQuery {
         }
     }
 
-    fn query(&self) -> Option<&str> {
-        self.q.as_deref()
+    fn tvdb_identifier(&self) -> Option<i64> {
+        self.tvdb_id
+            .as_deref()
+            .and_then(|value| value.trim().parse::<i64>().ok())
+    }
+
+    fn season_number(&self) -> Option<u32> {
+        self.season
+            .as_deref()
+            .and_then(|value| value.trim().parse::<u32>().ok())
     }
 }
 
@@ -67,11 +81,26 @@ async fn torznab_handler(
     State(state): State<SharedAppState>,
     Query(query): Query<TorznabQuery>,
 ) -> Result<Response, HttpError> {
-    match query.operation() {
+    let operation = query.operation();
+    let operation_name = match &operation {
+        TorznabOperation::Caps => "caps",
+        TorznabOperation::Search => "search",
+        TorznabOperation::TvSearch => "tvsearch",
+        TorznabOperation::Unsupported(name) => name,
+    };
+
+    info!(
+        operation = operation_name,
+        tvdb = query.tvdb_id.as_deref(),
+        season = query.season.as_deref(),
+        limit = query.limit,
+        "torznab request received"
+    );
+
+    match operation {
         TorznabOperation::Caps => respond_caps(&state),
-        TorznabOperation::Search | TorznabOperation::TvSearch => {
-            respond_search(&state, &query).await
-        }
+        TorznabOperation::Search => respond_generic_search(&state, &query).await,
+        TorznabOperation::TvSearch => respond_tv_search(&state, &query).await,
         TorznabOperation::Unsupported(name) => {
             Err(HttpError::UnsupportedOperation(name.to_string()))
         }
@@ -88,23 +117,206 @@ fn respond_caps(state: &AppState) -> Result<Response, HttpError> {
         .into_response())
 }
 
-async fn respond_search(state: &AppState, query: &TorznabQuery) -> Result<Response, HttpError> {
+async fn respond_generic_search(
+    state: &AppState,
+    query: &TorznabQuery,
+) -> Result<Response, HttpError> {
     let metadata = build_channel_metadata(state)?;
-    let limit = query.limit.unwrap_or(state.config.default_limit);
+    let limit = query
+        .limit
+        .unwrap_or(state.config.default_limit)
+        .max(1)
+        .min(state.config.default_limit);
+    let offset = query.offset.unwrap_or(0);
 
-    let q = query
-        .query()
-        .ok_or_else(|| HttpError::MissingRequiredParameter("q"))?;
+    if query
+        .q
+        .as_deref()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+    {
+        debug!(
+            limit,
+            offset, "torznab search received unsupported q parameter; returning empty set"
+        );
+        let xml = torznab::render_feed(&metadata, &[], offset, 0)?;
+        return Ok((
+            [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+            xml,
+        )
+            .into_response());
+    }
 
-    let request = TorrentSearchRequest {
-        query: q.to_string(),
-        limit: Some(limit),
-        offset: query.offset,
+    if !category_filter_matches(&query.cat) {
+        debug!(
+            limit,
+            offset, "tvsearch category filter unsupported; returning empty feed"
+        );
+        let xml = torznab::render_feed(&metadata, &[], offset, 0)?;
+        return Ok((
+            [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+            xml,
+        )
+            .into_response());
+    }
+
+    if !category_filter_matches(&query.cat) {
+        debug!(
+            limit,
+            offset, "torznab search category filter unsupported; returning empty set"
+        );
+        let xml = torznab::render_feed(&metadata, &[], offset, 0)?;
+        return Ok((
+            [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+            xml,
+        )
+            .into_response());
+    }
+
+    debug!(
+        limit,
+        offset, "serving torznab search via recent public torrents"
+    );
+
+    let fetch_limit = offset.saturating_add(limit).min(state.config.default_limit);
+    let torrents = state
+        .releases
+        .recent_public_torrents(fetch_limit)
+        .await
+        .map_err(HttpError::Releases)?;
+
+    let total = torrents.len();
+
+    let items: Vec<TorznabItem> = torrents
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(map_torrent)
+        .collect();
+    let xml = torznab::render_feed(&metadata, &items, offset, total)?;
+
+    Ok((
+        [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+        xml,
+    )
+        .into_response())
+}
+
+async fn respond_tv_search(state: &AppState, query: &TorznabQuery) -> Result<Response, HttpError> {
+    let metadata = build_channel_metadata(state)?;
+    let limit = query
+        .limit
+        .unwrap_or(state.config.default_limit)
+        .max(1)
+        .min(state.config.default_limit);
+
+    let offset = query.offset.unwrap_or(0);
+
+    if query
+        .q
+        .as_deref()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+    {
+        debug!(
+            limit,
+            offset, "tvsearch received unsupported q parameter; returning empty feed"
+        );
+        let xml = torznab::render_feed(&metadata, &[], offset, 0)?;
+        return Ok((
+            [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+            xml,
+        )
+            .into_response());
+    }
+
+    let tvdb_id = match query.tvdb_identifier() {
+        Some(id) => id,
+        None => {
+            debug!(
+                limit,
+                offset, "tvsearch missing tvdbid; returning empty feed without error"
+            );
+            let xml = torznab::render_feed(&metadata, &[], offset, 0)?;
+            return Ok((
+                [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+                xml,
+            )
+                .into_response());
+        }
     };
 
-    let torrents = state.releases.search_torrents(request).await?;
-    let items: Vec<TorznabItem> = torrents.into_iter().map(map_torrent).collect();
-    let xml = torznab::render_feed(&metadata, &items)?;
+    let season = match query.season_number() {
+        Some(value) => value,
+        None => {
+            debug!(
+                tvdb_id,
+                limit, "tvsearch missing season; returning empty feed without error"
+            );
+            let xml = torznab::render_feed(&metadata, &[], offset, 0)?;
+            return Ok((
+                [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+                xml,
+            )
+                .into_response());
+        }
+    };
+
+    debug!(tvdb_id, season, limit, "resolving plexanibridge mapping");
+
+    let anilist_id = state
+        .mappings
+        .resolve_anilist_id(tvdb_id, season)
+        .await
+        .map_err(HttpError::Mapping)?;
+
+    debug!(tvdb_id, season, ?anilist_id, "mapping lookup completed");
+
+    let fetch_limit = offset.saturating_add(limit).min(state.config.default_limit);
+
+    let collected: Vec<Torrent> = if let Some(anilist_id) = anilist_id {
+        debug!(tvdb_id, season, anilist_id, "querying releases.moe");
+        match state
+            .releases
+            .search_torrents(anilist_id, fetch_limit)
+            .await
+        {
+            Ok(torrents) => torrents,
+            Err(err) => {
+                tracing::error!(
+                    tvdb_id,
+                    season,
+                    anilist_id,
+                    error = %err,
+                    "releases.moe lookup failed"
+                );
+                return Err(HttpError::Releases(err));
+            }
+        }
+    } else {
+        info!(
+            tvdb_id,
+            season, "no anilist mapping found; returning empty result set"
+        );
+        Vec::new()
+    };
+
+    debug!(
+        tvdb_id,
+        season,
+        matches = collected.len(),
+        "prepared torznab feed items"
+    );
+
+    let total = collected.len();
+
+    let items: Vec<TorznabItem> = collected
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(map_torrent)
+        .collect();
+    let xml = torznab::render_feed(&metadata, &items, offset, total)?;
 
     Ok((
         [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
@@ -136,12 +348,12 @@ fn build_channel_metadata(state: &AppState) -> Result<ChannelMetadata, HttpError
 fn map_torrent(torrent: crate::releases::Torrent) -> TorznabItem {
     let mut attributes = Vec::new();
 
-    if let Some(size) = torrent.size_bytes {
-        attributes.push(TorznabAttr {
-            name: "size".to_string(),
-            value: size.to_string(),
-        });
-    }
+    let primary_category_id = torznab::ANIME_CATEGORY.id;
+    let sub_category_id = torznab::ANIME_CATEGORY
+        .subcategories
+        .get(0)
+        .map(|sub| sub.id)
+        .unwrap_or(primary_category_id);
 
     if let Some(seeders) = torrent.seeders {
         attributes.push(TorznabAttr {
@@ -157,27 +369,18 @@ fn map_torrent(torrent: crate::releases::Torrent) -> TorznabItem {
         });
     }
 
-    if let Some(info_hash) = torrent.info_hash.as_deref() {
-        attributes.push(TorznabAttr {
-            name: "infohash".to_string(),
-            value: info_hash.to_string(),
-        });
-    }
-
-    if let Some(magnet) = torrent.magnet_uri.as_deref() {
-        attributes.push(TorznabAttr {
-            name: "magneturl".to_string(),
-            value: magnet.to_string(),
-        });
-    }
-
     attributes.push(TorznabAttr {
-        name: "downloadvolumefactor".to_string(),
-        value: "0".to_string(),
+        name: "category".to_string(),
+        value: primary_category_id.to_string(),
     });
     attributes.push(TorznabAttr {
-        name: "uploadvolumefactor".to_string(),
-        value: "1".to_string(),
+        name: "category".to_string(),
+        value: sub_category_id.to_string(),
+    });
+
+    attributes.push(TorznabAttr {
+        name: "type".to_string(),
+        value: "series".to_string(),
     });
 
     let enclosure = TorznabEnclosure {
@@ -194,10 +397,39 @@ fn map_torrent(torrent: crate::releases::Torrent) -> TorznabItem {
         comments: torrent.comments,
         description: torrent.description,
         published: torrent.published,
-        size_bytes: torrent.size_bytes,
-        categories: vec![],
         attributes,
         enclosure: Some(enclosure),
+    }
+}
+
+fn category_filter_matches(cat_param: &Option<String>) -> bool {
+    match cat_param {
+        None => true,
+        Some(value) => {
+            let mut matches_supported = false;
+            let mut any_values = false;
+            for part in value.split(',') {
+                let trimmed = part.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                any_values = true;
+                if trimmed == "0" {
+                    return true;
+                }
+                if let Ok(id) = trimmed.parse::<u32>() {
+                    if id == torznab::ANIME_CATEGORY.id
+                        || torznab::ANIME_CATEGORY
+                            .subcategories
+                            .iter()
+                            .any(|sub| sub.id == id)
+                    {
+                        matches_supported = true;
+                    }
+                }
+            }
+            if !any_values { true } else { matches_supported }
+        }
     }
 }
 
@@ -205,10 +437,10 @@ fn map_torrent(torrent: crate::releases::Torrent) -> TorznabItem {
 pub enum HttpError {
     #[error("unsupported torznab operation `{0}`")]
     UnsupportedOperation(String),
-    #[error("missing required torznab parameter `{0}`")]
-    MissingRequiredParameter(&'static str),
     #[error("failed to construct torznab metadata base url: {0}")]
     BaseUrl(String),
+    #[error(transparent)]
+    Mapping(#[from] MappingError),
     #[error(transparent)]
     Releases(#[from] ReleasesError),
     #[error(transparent)]
@@ -221,16 +453,17 @@ impl IntoResponse for HttpError {
             HttpError::UnsupportedOperation(_) => {
                 (StatusCode::BAD_REQUEST, Cow::from(self.to_string()))
             }
-            HttpError::MissingRequiredParameter(_) => {
-                (StatusCode::BAD_REQUEST, Cow::from(self.to_string()))
-            }
             HttpError::BaseUrl(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Cow::from("Failed to construct public facing URL for seadexer indexer"),
             ),
-            HttpError::Releases(ReleasesError::NotImplemented) => (
-                StatusCode::NOT_IMPLEMENTED,
-                Cow::from("Releases.moe integration has not been implemented yet"),
+            HttpError::Mapping(_) => (
+                StatusCode::BAD_GATEWAY,
+                Cow::from("Failed to resolve PlexAniBridge mapping for the requested query"),
+            ),
+            HttpError::Releases(ReleasesError::Url(_)) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Cow::from("Failed to construct releases.moe request"),
             ),
             HttpError::Releases(_) => (
                 StatusCode::BAD_GATEWAY,

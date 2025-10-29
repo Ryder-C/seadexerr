@@ -1,5 +1,6 @@
 mod config;
 mod http;
+mod mapping;
 mod releases;
 mod torznab;
 
@@ -10,12 +11,14 @@ use tokio::net::TcpListener;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::config::AppConfig;
+use crate::mapping::PlexAniBridgeClient;
 use crate::releases::ReleasesClient;
 
 #[derive(Clone)]
 pub struct AppState {
     pub config: AppConfig,
     pub releases: ReleasesClient,
+    pub mappings: PlexAniBridgeClient,
 }
 
 pub type SharedAppState = Arc<AppState>;
@@ -33,7 +36,18 @@ async fn main() -> anyhow::Result<()> {
     )
     .context("failed to construct releases.moe client")?;
 
-    let state = Arc::new(AppState { config, releases });
+    let mappings = PlexAniBridgeClient::new(
+        config.mapping_base_url.clone(),
+        config.mapping_timeout,
+        config.default_limit,
+    )
+    .context("failed to construct PlexAniBridge client")?;
+
+    let state = Arc::new(AppState {
+        config,
+        releases,
+        mappings,
+    });
     let app = http::router(state.clone());
 
     let listener = TcpListener::bind(listen_addr)
