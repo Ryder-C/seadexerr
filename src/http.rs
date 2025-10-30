@@ -444,7 +444,7 @@ impl IntoResponse for HttpError {
             }
             HttpError::BaseUrl(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Cow::from("Failed to construct public facing URL for seadexer indexer"),
+                Cow::from("Failed to construct public facing URL for seadexerr indexer"),
             ),
             HttpError::Mapping(_) => (
                 StatusCode::BAD_GATEWAY,

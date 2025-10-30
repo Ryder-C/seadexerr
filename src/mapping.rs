@@ -17,7 +17,7 @@ impl PlexAniBridgeClient {
     pub fn new(base_url: Url, timeout: Duration, per_request_cap: usize) -> anyhow::Result<Self> {
         let http = Client::builder()
             .timeout(timeout)
-            .user_agent(format!("seadexer/{}", env!("CARGO_PKG_VERSION")))
+            .user_agent(format!("seadexerr/{}", env!("CARGO_PKG_VERSION")))
             .build()?;
 
         let per_request_cap = per_request_cap.max(50);

@@ -1067,7 +1067,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "seadexer"
+name = "seadexerr"
 version = "0.1.0"
 dependencies = [
  "anyhow",

@@ -17,7 +17,7 @@ impl SonarrClient {
     pub fn new(base_url: Url, api_key: String, timeout: Duration) -> anyhow::Result<Self> {
         let http = Client::builder()
             .timeout(timeout)
-            .user_agent(format!("seadexer/{}", env!("CARGO_PKG_VERSION")))
+            .user_agent(format!("seadexerr/{}", env!("CARGO_PKG_VERSION")))
             .build()?;
 
         Ok(Self {
