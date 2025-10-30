@@ -128,14 +128,16 @@ pub struct Torrent {
     pub download_url: String,
     pub info_hash: Option<String>,
     pub published: Option<OffsetDateTime>,
-    pub size_bytes: Option<u64>,
+    pub files: Vec<TorrentFile>,
+    pub size_bytes: u64,
+    pub is_best: bool,
 }
 
 impl From<TorrentRecord> for Torrent {
     fn from(record: TorrentRecord) -> Self {
         let download_url = rewritten_download_url(&record).unwrap_or_else(|| record.url.clone());
 
-        let size_bytes = None;
+        let size_bytes = record.files.iter().map(|f| f.length).sum::<u64>();
         Torrent {
             id: record.id,
             download_url,
@@ -145,7 +147,9 @@ impl From<TorrentRecord> for Torrent {
                 .as_deref()
                 .and_then(parse_timestamp)
                 .or_else(|| record.created.as_deref().and_then(parse_timestamp)),
+            files: record.files,
             size_bytes,
+            is_best: record.is_best,
         }
     }
 }
@@ -162,6 +166,15 @@ struct TorrentRecord {
     created: Option<String>,
     #[serde(default)]
     updated: Option<String>,
+    #[serde(rename = "isBest")]
+    is_best: bool,
+    files: Vec<TorrentFile>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TorrentFile {
+    pub length: u64,
+    name: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

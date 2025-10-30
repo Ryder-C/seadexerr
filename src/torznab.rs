@@ -16,7 +16,7 @@ pub struct TorznabItem {
     pub guid: String,
     pub link: String,
     pub published: Option<OffsetDateTime>,
-    pub size_bytes: Option<u64>,
+    pub size_bytes: u64,
     pub info_hash: Option<String>,
     pub seeders: u32,
     pub leechers: u32,
@@ -34,6 +34,9 @@ pub struct TorznabSubCategory {
     pub id: u32,
     pub name: &'static str,
 }
+
+const TAG: &str = "internal";
+const DESC: &str = "Description";
 
 pub const ANIME_CATEGORY: TorznabCategory = TorznabCategory {
     id: 5000,
@@ -113,8 +116,17 @@ pub fn render_caps(metadata: &ChannelMetadata) -> Result<String, TorznabBuildErr
 
         writer.write_event(Event::End(BytesEnd::new("category")))?;
     }
-
     writer.write_event(Event::End(BytesEnd::new("categories")))?;
+
+    writer.write_event(Event::Start(BytesStart::new("tags")))?;
+    {
+        let mut tag_el = BytesStart::new("tag");
+        tag_el.push_attribute(("name", TAG));
+        tag_el.push_attribute(("description", DESC));
+        writer.write_event(Event::Empty(tag_el))?;
+    }
+    writer.write_event(Event::End(BytesEnd::new("tags")))?;
+
     writer.write_event(Event::End(BytesEnd::new("caps")))?;
 
     Ok(String::from_utf8(writer.into_inner())?)
@@ -150,9 +162,7 @@ pub fn render_feed(
             write_text_element(&mut writer, "pubDate", &formatted)?;
         }
 
-        if let Some(size) = item.size_bytes {
-            write_text_element(&mut writer, "size", &size.to_string())?;
-        }
+        write_text_element(&mut writer, "size", &item.size_bytes.to_string())?;
 
         if let Some(info_hash) = item.info_hash.as_deref() {
             write_text_element(&mut writer, "infohash", info_hash)?;
@@ -161,10 +171,7 @@ pub fn render_feed(
         let mut enclosure = BytesStart::new("enclosure");
         enclosure.push_attribute(("url", item.link.as_str()));
         enclosure.push_attribute(("type", "application/x-bittorrent"));
-        if let Some(size) = item.size_bytes {
-            let length = size.to_string();
-            enclosure.push_attribute(("length", length.as_str()));
-        }
+        enclosure.push_attribute(("length", item.size_bytes.to_string().as_str()));
         writer.write_event(Event::Empty(enclosure))?;
 
         write_attr(&mut writer, "category", &ANIME_CATEGORY.id.to_string())?;
@@ -173,6 +180,7 @@ pub fn render_feed(
         }
         write_attr(&mut writer, "seeders", &item.seeders.to_string())?;
         write_attr(&mut writer, "leechers", &item.leechers.to_string())?;
+        write_attr(&mut writer, "tag", TAG)?;
 
         writer.write_event(Event::End(BytesEnd::new("item")))?;
     }

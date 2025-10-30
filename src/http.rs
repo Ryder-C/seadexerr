@@ -42,6 +42,8 @@ struct TorznabQuery {
     season: Option<String>,
     #[serde(rename = "tvdbid")]
     tvdb_id: Option<String>,
+    #[serde(rename = "q")]
+    query: Option<String>,
 }
 
 impl TorznabQuery {
@@ -126,6 +128,19 @@ async fn respond_generic_search(
         .min(state.config.default_limit);
     let offset = query.offset.unwrap_or(0);
 
+    if query.query.is_some() {
+        debug!(
+            limit,
+            offset, "generic search query unsupported; returning empty feed"
+        );
+        let xml = torznab::render_feed(&metadata, &[], offset, 0)?;
+        return Ok((
+            [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+            xml,
+        )
+            .into_response());
+    }
+
     if !category_filter_matches(&query.cat) {
         debug!(
             limit,
@@ -170,7 +185,7 @@ async fn respond_generic_search(
         .into_iter()
         .skip(offset)
         .take(limit)
-        .map(map_torrent)
+        .map(|torrent| map_torrent_search(torrent))
         .collect();
     let xml = torznab::render_feed(&metadata, &items, offset, total)?;
 
@@ -223,16 +238,6 @@ async fn respond_tv_search(state: &AppState, query: &TorznabQuery) -> Result<Res
         }
     };
 
-    debug!(tvdb_id, "resolving title from sonarr");
-
-    let title = state
-        .sonarr
-        .resolve_name(tvdb_id)
-        .await
-        .map_err(HttpError::Sonarr)?;
-
-    debug!(tvdb_id, %title, "resolved series title from sonarr");
-
     debug!(tvdb_id, season, limit, "resolving plexanibridge mapping");
 
     let anilist_id = state
@@ -280,12 +285,15 @@ async fn respond_tv_search(state: &AppState, query: &TorznabQuery) -> Result<Res
     );
 
     let total = collected.len();
+    let feed_title = resolve_feed_title(state, tvdb_id, season).await?;
 
     let items: Vec<TorznabItem> = collected
         .into_iter()
+        .filter(|item| item.files.len() > 1)
         .skip(offset)
         .take(limit)
-        .map(map_torrent)
+        .enumerate()
+        .map(|(i, torrent)| map_torrent_tvsearch(i, torrent, feed_title.clone()))
         .collect();
     let xml = torznab::render_feed(&metadata, &items, offset, total)?;
 
@@ -294,6 +302,21 @@ async fn respond_tv_search(state: &AppState, query: &TorznabQuery) -> Result<Res
         xml,
     )
         .into_response())
+}
+
+async fn resolve_feed_title(
+    state: &AppState,
+    tvdb_id: i64,
+    season: u32,
+) -> Result<String, HttpError> {
+    debug!(tvdb_id, season, "resolving title from sonarr");
+    let series_title = state
+        .sonarr
+        .resolve_name(tvdb_id)
+        .await
+        .map_err(HttpError::Sonarr)?;
+    debug!(tvdb_id, %series_title, "resolved series title from sonarr");
+    Ok(format!("{series_title} S{season:02} Bluray 1080p remux"))
 }
 
 fn build_channel_metadata(state: &AppState) -> Result<ChannelMetadata, HttpError> {
@@ -311,24 +334,58 @@ fn build_channel_metadata(state: &AppState) -> Result<ChannelMetadata, HttpError
     })
 }
 
-fn map_torrent(torrent: crate::releases::Torrent) -> TorznabItem {
+fn map_torrent_search(torrent: crate::releases::Torrent) -> TorznabItem {
     let crate::releases::Torrent {
         id,
         download_url,
         info_hash,
         published,
         size_bytes,
+        is_best,
+        files: _,
     } = torrent;
 
+    let title = format!("Torrent {}", id);
+    let seeders = if is_best { 1000 } else { 100 };
+
     TorznabItem {
-        title: format!("Torrent {}", id),
+        title,
         guid: id,
         link: download_url,
         published,
         size_bytes,
         info_hash,
-        seeders: 100,
-        leechers: 100,
+        seeders,
+        leechers: 0,
+    }
+}
+
+fn map_torrent_tvsearch(
+    index: usize,
+    torrent: crate::releases::Torrent,
+    override_title: String,
+) -> TorznabItem {
+    let crate::releases::Torrent {
+        id,
+        download_url,
+        info_hash,
+        published,
+        size_bytes,
+        is_best,
+        files: _,
+    } = torrent;
+
+    let seeders = if is_best { 1000 } else { 100 };
+
+    TorznabItem {
+        title: override_title,
+        guid: id,
+        link: download_url,
+        published,
+        size_bytes,
+        info_hash,
+        seeders,
+        leechers: 0,
     }
 }
 
