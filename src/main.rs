@@ -12,7 +12,7 @@ use tokio::net::TcpListener;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::config::AppConfig;
-use crate::mapping::PlexAniBridgeClient;
+use crate::mapping::PlexAniBridgeMappings;
 use crate::releases::ReleasesClient;
 use crate::sonarr::SonarrClient;
 
@@ -21,7 +21,7 @@ pub struct AppState {
     pub config: AppConfig,
     pub sonarr: SonarrClient,
     pub releases: ReleasesClient,
-    pub mappings: PlexAniBridgeClient,
+    pub mappings: PlexAniBridgeMappings,
 }
 
 pub type SharedAppState = Arc<AppState>;
@@ -46,12 +46,14 @@ async fn main() -> anyhow::Result<()> {
     )
     .context("failed to construct Sonarr client")?;
 
-    let mappings = PlexAniBridgeClient::new(
-        config.mapping_base_url.clone(),
+    let mappings = PlexAniBridgeMappings::bootstrap(
+        config.data_path.clone(),
+        config.mapping_source_url.clone(),
+        config.mapping_refresh_interval,
         config.mapping_timeout,
-        config.default_limit,
     )
-    .context("failed to construct PlexAniBridge client")?;
+    .await
+    .context("failed to initialise PlexAniBridge mappings store")?;
 
     let state = Arc::new(AppState {
         config,

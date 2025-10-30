@@ -21,21 +21,23 @@ services:
 <summary>Advanced Configuration</summary>
 Most can be left as default
 
-| Variable                         | Default                                                            | Purpose                                                                           |
-| -------------------------------- | ------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
-| `SONARR_API_KEY`                 | **(required)**                                                     | Sonarr API key used to resolve series titles.                                     |
-| `SONARR_BASE_URL`                | `http://localhost:8989/`                                           | Base URL for your Sonarr instance.                                                |
-| `SEADEXER_HOST`                  | `0.0.0.0`                                                          | Interface the HTTP server listens on.                                             |
-| `SEADEXER_PORT`                  | `6767`                                                             | TCP port Seadexerr binds to. Must be a valid `u16`.                               |
-| `SEADEXER_PUBLIC_BASE_URL`       | (optional; falls back to `http://{SEADEXER_HOST}:{SEADEXER_PORT}`) | Base URL advertised in the Torznab feed. Set when running behind a reverse proxy. |
-| `SEADEXER_TITLE`                 | `Seadexerr`                                                        | Channel title reported to Torznab clients.                                        |
-| `SEADEXER_DESCRIPTION`           | `Indexer bridge for releases.moe`                                  | Channel description shown to Torznab clients.                                     |
-| `SEADEXER_DEFAULT_LIMIT`         | `100`                                                              | Maximum number of results returned in a single Torznab feed.                      |
-| `SEADEXER_RELEASES_BASE_URL`     | `https://releases.moe/api/`                                        | Root URL for the releases.moe API.                                                |
-| `SEADEXER_RELEASES_TIMEOUT_SECS` | `10`                                                               | Timeout (seconds) for releases.moe requests.                                      |
-| `SEADEXER_MAPPING_BASE_URL`      | `https://plexanibridge-api.elias.eu.org/`                          | Root URL for the PlexAniBridge lookup API.                                        |
-| `SEADEXER_MAPPING_TIMEOUT_SECS`  | `SEADEXER_RELEASES_TIMEOUT_SECS` (10)                              | Timeout (seconds) for PlexAniBridge requests.                                     |
-| `SONARR_TIMEOUT_SECS`            | `10`                                                               | Timeout (seconds) for Sonarr API requests.                                        |
+| Variable                         | Default                                                                                          | Purpose                                                                           |
+| -------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
+| `SONARR_API_KEY`                 | **(required)**                                                                                   | Sonarr API key used to resolve series titles.                                     |
+| `SONARR_BASE_URL`                | `http://localhost:8989/`                                                                         | Base URL for your Sonarr instance.                                                |
+| `SEADEXER_HOST`                  | `0.0.0.0`                                                                                        | Interface the HTTP server listens on.                                             |
+| `SEADEXER_PORT`                  | `6767`                                                                                           | TCP port Seadexerr binds to. Must be a valid `u16`.                               |
+| `SEADEXER_PUBLIC_BASE_URL`       | (optional; falls back to `http://{SEADEXER_HOST}:{SEADEXER_PORT}`)                               | Base URL advertised in the Torznab feed. Set when running behind a reverse proxy. |
+| `SEADEXER_TITLE`                 | `Seadexerr`                                                                                      | Channel title reported to Torznab clients.                                        |
+| `SEADEXER_DESCRIPTION`           | `Indexer bridge for releases.moe`                                                                | Channel description shown to Torznab clients.                                     |
+| `SEADEXER_DEFAULT_LIMIT`         | `100`                                                                                            | Maximum number of results returned in a single Torznab feed.                      |
+| `SEADEXER_RELEASES_BASE_URL`     | `https://releases.moe/api/`                                                                      | Root URL for the releases.moe API.                                                |
+| `SEADEXER_RELEASES_TIMEOUT_SECS` | `10`                                                                                             | Timeout (seconds) for releases.moe requests.                                      |
+| `SEADEXER_DATA_PATH`             | `data`                                                                                           | Directory used to store downloaded data, including mapping files.                 |
+| `SEADEXER_MAPPING_SOURCE_URL`    | `https://raw.githubusercontent.com/eliasbenb/PlexAniBridge-Mappings/refs/heads/v2/mappings.json` | URL to the PlexAniBridge mappings JSON.                                           |
+| `SEADEXER_MAPPING_REFRESH_SECS`  | `21600`                                                                                          | Interval (seconds) between background mapping refreshes.                          |
+| `SEADEXER_MAPPING_TIMEOUT_SECS`  | `SEADEXER_RELEASES_TIMEOUT_SECS` (10)                                                            | Timeout (seconds) for PlexAniBridge downloads.                                    |
+| `SONARR_TIMEOUT_SECS`            | `10`                                                                                             | Timeout (seconds) for Sonarr API requests.                                        |
 
 </details>
 
@@ -63,7 +65,7 @@ In Sonarr:
 - [ ] RSS Refresh
 - [ ] Movie Support
 - [ ] Specials Support
-- [ ] Local PlexAniBridge Mappings
+- [x] Local PlexAniBridge Mappings
 
 This project uses [PlexAniBridge Mappings](https://github.com/eliasbenb/PlexAniBridge-Mappings).
 

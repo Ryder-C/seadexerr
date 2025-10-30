@@ -1,32 +1,298 @@
 use std::collections::HashMap;
-use std::time::Duration;
+use std::io::ErrorKind;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
-use reqwest::{Client, Url};
+use anyhow::Context;
+use reqwest::Client;
 use serde::Deserialize;
 use thiserror::Error;
-use tracing::debug;
+use tokio::fs;
+use tokio::sync::RwLock;
+use tracing::{debug, warn};
+use url::Url;
 
 #[derive(Debug, Clone)]
-pub struct PlexAniBridgeClient {
-    http: Client,
-    base_url: Url,
-    per_request_cap: usize,
+pub struct PlexAniBridgeMappings {
+    path: PathBuf,
+    cache: Arc<RwLock<Option<CachedMappings>>>,
+    client: Client,
+    source_url: Url,
+    refresh_interval: Duration,
 }
 
-impl PlexAniBridgeClient {
-    pub fn new(base_url: Url, timeout: Duration, per_request_cap: usize) -> anyhow::Result<Self> {
-        let http = Client::builder()
+#[derive(Debug)]
+struct CachedMappings {
+    modified: SystemTime,
+    entries: Arc<HashMap<i64, Vec<MappingEntry>>>,
+}
+
+#[derive(Debug, Clone)]
+struct MappingEntry {
+    anilist_id: i64,
+    seasons: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawMappingRecord {
+    #[serde(default)]
+    tvdb_id: Option<i64>,
+    #[serde(default)]
+    tvdb_mappings: HashMap<String, serde_json::Value>,
+}
+
+impl PlexAniBridgeMappings {
+    pub async fn bootstrap(
+        data_path: PathBuf,
+        source_url: Url,
+        refresh_interval: Duration,
+        timeout: Duration,
+    ) -> anyhow::Result<Self> {
+        fs::create_dir_all(&data_path).await.with_context(|| {
+            format!("failed to create data directory at {}", data_path.display())
+        })?;
+
+        let path = data_path.join("mappings.json");
+        let client = Client::builder()
             .timeout(timeout)
             .user_agent(format!("seadexerr/{}", env!("CARGO_PKG_VERSION")))
-            .build()?;
+            .build()
+            .context("failed to construct PlexAniBridge HTTP client")?;
 
-        let per_request_cap = per_request_cap.max(50);
+        let refresh_interval = if refresh_interval.is_zero() {
+            Duration::from_secs(21_600)
+        } else {
+            refresh_interval
+        };
 
-        Ok(Self {
-            http,
-            base_url,
-            per_request_cap,
-        })
+        let mappings = Self {
+            path,
+            cache: Arc::new(RwLock::new(None)),
+            client,
+            source_url,
+            refresh_interval,
+        };
+
+        mappings
+            .refresh_mappings()
+            .await
+            .map_err(anyhow::Error::from)?;
+        mappings.spawn_refresh_task();
+
+        Ok(mappings)
+    }
+
+    fn spawn_refresh_task(&self) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(this.refresh_interval).await;
+                if let Err(error) = this.refresh_mappings().await {
+                    warn!(
+                        error = %error,
+                        url = %this.source_url,
+                        "failed to refresh plexanibridge mappings"
+                    );
+                }
+            }
+        });
+    }
+
+    async fn refresh_mappings(&self) -> Result<(), MappingError> {
+        let response = self
+            .client
+            .get(self.source_url.clone())
+            .send()
+            .await
+            .map_err(|source| MappingError::Download {
+                source,
+                url: self.source_url.clone(),
+            })?;
+
+        let response = response
+            .error_for_status()
+            .map_err(|source| MappingError::Download {
+                source,
+                url: self.source_url.clone(),
+            })?;
+
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|source| MappingError::Download {
+                source,
+                url: self.source_url.clone(),
+            })?
+            .to_vec();
+
+        let raw: HashMap<String, RawMappingRecord> = serde_json::from_slice(&bytes)?;
+        let index = Self::build_index(raw);
+        let series = index.len();
+        let entries = index.values().map(|group| group.len()).sum::<usize>();
+        let index = Arc::new(index);
+
+        let temp_path = self.path.with_extension("json.tmp");
+        fs::write(&temp_path, &bytes)
+            .await
+            .map_err(|source| MappingError::Write {
+                source,
+                path: temp_path.clone(),
+            })?;
+
+        match fs::rename(&temp_path, &self.path).await {
+            Ok(()) => {}
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+                fs::remove_file(&self.path)
+                    .await
+                    .map_err(|source| MappingError::Remove {
+                        source,
+                        path: self.path.clone(),
+                    })?;
+                fs::rename(&temp_path, &self.path)
+                    .await
+                    .map_err(|source| MappingError::Write {
+                        source,
+                        path: self.path.clone(),
+                    })?;
+            }
+            Err(source) => {
+                return Err(MappingError::Write {
+                    source,
+                    path: self.path.clone(),
+                });
+            }
+        }
+
+        let metadata = fs::metadata(&self.path)
+            .await
+            .map_err(|source| MappingError::Metadata {
+                source,
+                path: self.path.clone(),
+            })?;
+        let modified = metadata
+            .modified()
+            .map_err(|source| MappingError::Metadata {
+                source,
+                path: self.path.clone(),
+            })?;
+
+        {
+            let mut guard = self.cache.write().await;
+            *guard = Some(CachedMappings {
+                modified,
+                entries: index.clone(),
+            });
+        }
+
+        debug!(
+            path = %self.path.display(),
+            url = %self.source_url,
+            series,
+            entries,
+            "refreshed plexanibridge mappings"
+        );
+
+        Ok(())
+    }
+
+    async fn load_mappings(&self) -> Result<Arc<HashMap<i64, Vec<MappingEntry>>>, MappingError> {
+        let metadata = match fs::metadata(&self.path).await {
+            Ok(metadata) => metadata,
+            Err(source) if source.kind() == ErrorKind::NotFound => {
+                return Err(MappingError::Read {
+                    source,
+                    path: self.path.clone(),
+                });
+            }
+            Err(source) => {
+                return Err(MappingError::Metadata {
+                    source,
+                    path: self.path.clone(),
+                });
+            }
+        };
+
+        let modified = metadata
+            .modified()
+            .map_err(|source| MappingError::Metadata {
+                source,
+                path: self.path.clone(),
+            })?;
+
+        {
+            let guard = self.cache.read().await;
+            if let Some(cache) = guard.as_ref() {
+                if cache.modified == modified {
+                    debug!(
+                        path = %self.path.display(),
+                        "using cached plexanibridge mappings"
+                    );
+                    return Ok(cache.entries.clone());
+                }
+            }
+        }
+
+        let contents = fs::read(&self.path)
+            .await
+            .map_err(|source| MappingError::Read {
+                source,
+                path: self.path.clone(),
+            })?;
+
+        let raw: HashMap<String, RawMappingRecord> = serde_json::from_slice(&contents)?;
+        let index = Self::build_index(raw);
+        let series = index.len();
+        let entries = index.values().map(|group| group.len()).sum::<usize>();
+        let index = Arc::new(index);
+
+        {
+            let mut guard = self.cache.write().await;
+            *guard = Some(CachedMappings {
+                modified,
+                entries: index.clone(),
+            });
+        }
+
+        debug!(
+            path = %self.path.display(),
+            series,
+            entries,
+            "loaded plexanibridge mappings from disk"
+        );
+
+        Ok(index)
+    }
+
+    fn build_index(raw: HashMap<String, RawMappingRecord>) -> HashMap<i64, Vec<MappingEntry>> {
+        let mut index: HashMap<i64, Vec<MappingEntry>> = HashMap::new();
+
+        for (anilist_id_str, record) in raw {
+            let Some(tvdb_id) = record.tvdb_id else {
+                continue;
+            };
+
+            let Ok(anilist_id) = anilist_id_str.parse::<i64>() else {
+                debug!(
+                    anilist_id = %anilist_id_str,
+                    "skipping mapping with non-numeric anilist id"
+                );
+                continue;
+            };
+
+            if record.tvdb_mappings.is_empty() {
+                debug!(anilist_id, tvdb_id, "skipping mapping with no season data");
+                continue;
+            }
+
+            let seasons = record.tvdb_mappings.into_keys().collect::<Vec<_>>();
+            index.entry(tvdb_id).or_default().push(MappingEntry {
+                anilist_id,
+                seasons,
+            });
+        }
+
+        index
     }
 
     pub async fn resolve_anilist_id(
@@ -34,83 +300,73 @@ impl PlexAniBridgeClient {
         tvdb_id: i64,
         season: u32,
     ) -> Result<Option<i64>, MappingError> {
-        let mut url = self
-            .base_url
-            .join("api/v2/search")
-            .map_err(MappingError::Url)?;
+        let mappings = self.load_mappings().await?;
+        let season_key = format!("s{season}");
 
-        {
-            let mut pairs = url.query_pairs_mut();
-            pairs.append_pair("tvdb_id", &tvdb_id.to_string());
-            pairs.append_pair("page", "1");
-            pairs.append_pair("limit", &self.per_request_cap.to_string());
-        }
+        if let Some(entries) = mappings.get(&tvdb_id) {
+            debug!(
+                tvdb_id,
+                season,
+                candidates = entries.len(),
+                "found candidate mappings for tvdb id"
+            );
 
-        debug!(
-            tvdb_id,
-            season,
-            limit = self.per_request_cap,
-            "requesting plexanibridge mappings"
-        );
-
-        let response = self.http.get(url).send().await?.error_for_status()?;
-        let payload: SearchResponse = response.json().await?;
-
-        let key = format!("s{season}");
-        debug!(
-            tvdb_id,
-            season,
-            candidates = payload.results.len(),
-            "plexanibridge response received"
-        );
-
-        for record in payload.results {
-            let Some(anilist_id) = record.anilist_id else {
-                continue;
-            };
-
-            let Some(mappings) = record.tvdb_mappings else {
-                continue;
-            };
-
-            if mappings.contains_key(&key) {
-                debug!(
-                    tvdb_id,
-                    season, anilist_id, "matched mapping entry for season"
-                );
-                return Ok(Some(anilist_id));
+            for entry in entries {
+                if entry.seasons.iter().any(|key| key == &season_key) {
+                    debug!(
+                        tvdb_id,
+                        season,
+                        anilist_id = entry.anilist_id,
+                        "matched mapping entry for season"
+                    );
+                    return Ok(Some(entry.anilist_id));
+                }
             }
         }
 
         debug!(
             tvdb_id,
-            season, "no season-specific mapping found in plexanibridge response"
+            season,
+            path = %self.path.display(),
+            "no season-specific mapping found in local mappings file"
         );
 
         Ok(None)
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct SearchResponse {
-    #[serde(default)]
-    results: Vec<Record>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Record {
-    #[serde(default)]
-    anilist_id: Option<i64>,
-    #[serde(default)]
-    tvdb_mappings: Option<HashMap<String, String>>,
-}
-
 #[derive(Debug, Error)]
 pub enum MappingError {
-    #[error("failed to build plexanibridge request url")]
-    Url(#[from] url::ParseError),
-    #[error("http error when querying plexanibridge api")]
-    Http(#[from] reqwest::Error),
-    #[error("failed to deserialise plexanibridge response payload")]
+    #[error("failed to download plexanibridge mappings from {url}")]
+    Download {
+        #[source]
+        source: reqwest::Error,
+        url: Url,
+    },
+    #[error("failed to read mapping file at {path}")]
+    Read {
+        #[source]
+        source: std::io::Error,
+        path: PathBuf,
+    },
+    #[error("failed to write mapping file at {path}")]
+    Write {
+        #[source]
+        source: std::io::Error,
+        path: PathBuf,
+    },
+    #[error("failed to remove mapping file at {path}")]
+    Remove {
+        #[source]
+        source: std::io::Error,
+        path: PathBuf,
+    },
+    #[error("failed to inspect mapping file metadata at {path}")]
+    Metadata {
+        #[source]
+        source: std::io::Error,
+        path: PathBuf,
+    },
+    #[error("failed to deserialise plexanibridge mapping file")]
     Deserialisation(#[from] serde_json::Error),
 }
