@@ -174,7 +174,9 @@ struct TorrentRecord {
 #[derive(Debug, Clone, Deserialize)]
 pub struct TorrentFile {
     pub length: u64,
-    _name: String,
+    #[allow(dead_code)]
+    #[serde(rename = "name")]
+    pub _name: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
