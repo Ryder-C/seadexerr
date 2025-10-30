@@ -185,7 +185,7 @@ async fn respond_generic_search(
         .into_iter()
         .skip(offset)
         .take(limit)
-        .map(|torrent| map_torrent_search(torrent))
+        .map(map_torrent_search)
         .collect();
     let xml = torznab::render_feed(&metadata, &items, offset, total)?;
 
@@ -292,8 +292,7 @@ async fn respond_tv_search(state: &AppState, query: &TorznabQuery) -> Result<Res
         .filter(|item| item.files.len() > 1)
         .skip(offset)
         .take(limit)
-        .enumerate()
-        .map(|(i, torrent)| map_torrent_tvsearch(i, torrent, feed_title.clone()))
+        .map(|torrent| map_torrent_tvsearch(torrent, feed_title.clone()))
         .collect();
     let xml = torznab::render_feed(&metadata, &items, offset, total)?;
 
@@ -360,11 +359,7 @@ fn map_torrent_search(torrent: crate::releases::Torrent) -> TorznabItem {
     }
 }
 
-fn map_torrent_tvsearch(
-    index: usize,
-    torrent: crate::releases::Torrent,
-    override_title: String,
-) -> TorznabItem {
+fn map_torrent_tvsearch(torrent: crate::releases::Torrent, override_title: String) -> TorznabItem {
     let crate::releases::Torrent {
         id,
         download_url,
@@ -404,17 +399,17 @@ fn category_filter_matches(cat_param: &Option<String>) -> bool {
                 if trimmed == "0" {
                     return true;
                 }
-                if let Ok(id) = trimmed.parse::<u32>() {
-                    if id == torznab::ANIME_CATEGORY.id
+                if let Ok(id) = trimmed.parse::<u32>()
+                    && (id == torznab::ANIME_CATEGORY.id
                         || torznab::ANIME_CATEGORY
                             .subcategories
                             .iter()
-                            .any(|sub| sub.id == id)
-                    {
-                        matches_supported = true;
-                    }
+                            .any(|sub| sub.id == id))
+                {
+                    matches_supported = true;
                 }
             }
+
             if !any_values { true } else { matches_supported }
         }
     }

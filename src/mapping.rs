@@ -222,14 +222,14 @@ impl PlexAniBridgeMappings {
 
         {
             let guard = self.cache.read().await;
-            if let Some(cache) = guard.as_ref() {
-                if cache.modified == modified {
-                    debug!(
-                        path = %self.path.display(),
-                        "using cached plexanibridge mappings"
-                    );
-                    return Ok(cache.entries.clone());
-                }
+            if let Some(cache) = guard.as_ref()
+                && cache.modified == modified
+            {
+                debug!(
+                    path = %self.path.display(),
+                    "using cached plexanibridge mappings"
+                );
+                return Ok(cache.entries.clone());
             }
         }
 

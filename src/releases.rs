@@ -174,7 +174,7 @@ struct TorrentRecord {
 #[derive(Debug, Clone, Deserialize)]
 pub struct TorrentFile {
     pub length: u64,
-    name: String,
+    _name: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -203,10 +203,7 @@ fn extract_nyaa_id(url: &str) -> Option<&str> {
     let needle = "/view/";
     let start = url.find(needle)? + needle.len();
     let rest = &url[start..];
-    let id = rest
-        .split(|c: char| c == '?' || c == '#' || c == '/')
-        .next()
-        .unwrap_or("");
+    let id = rest.split(['?', '#', '/']).next().unwrap_or("");
     if id.is_empty() || !id.chars().all(|ch| ch.is_ascii_digit()) {
         return None;
     }
