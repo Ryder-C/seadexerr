@@ -59,6 +59,8 @@ In Sonarr:
 4. Add an **Indexer Flag Condition**.
 5. Set **Name** and **Flag** to `Internal` (leave boxes unchecked)
 6. Click **Test** and **Save**
+7. Go to **Settings → Profiles**
+8. Click on your profile and give a high score to Seadex (Ex: 5000)
 
 ## Future Plans
 
