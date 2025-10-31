@@ -1,4 +1,4 @@
-use std::{env, net::SocketAddr, time::Duration};
+use std::{env, net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result};
 use reqwest::Url;
@@ -9,7 +9,9 @@ pub struct AppConfig {
     pub public_base_url: Option<Url>,
     pub releases_base_url: Url,
     pub releases_timeout: Duration,
-    pub mapping_base_url: Url,
+    pub data_path: PathBuf,
+    pub mapping_source_url: Url,
+    pub mapping_refresh_interval: Duration,
     pub mapping_timeout: Duration,
     pub application_title: String,
     pub application_description: String,
@@ -34,9 +36,21 @@ impl AppConfig {
             .unwrap_or_else(|_| "https://releases.moe/api/".to_string());
         let releases_base_url = parse_root_url(&raw_base_url, "SEADEXER_RELEASES_BASE_URL")?;
 
-        let raw_mapping_base_url = env::var("SEADEXER_MAPPING_BASE_URL")
-            .unwrap_or_else(|_| "https://plexanibridge-api.elias.eu.org/".to_string());
-        let mapping_base_url = parse_root_url(&raw_mapping_base_url, "SEADEXER_MAPPING_BASE_URL")?;
+        let data_path = env::var("SEADEXER_DATA_PATH").unwrap_or_else(|_| "data".to_string());
+        let data_path = PathBuf::from(data_path);
+
+        let raw_mapping_source_url = env::var("SEADEXER_MAPPING_SOURCE_URL").unwrap_or_else(|_| {
+            "https://raw.githubusercontent.com/eliasbenb/PlexAniBridge-Mappings/refs/heads/v2/mappings.json".to_string()
+        });
+        let mapping_source_url = Url::parse(&raw_mapping_source_url)
+            .context("SEADEXER_MAPPING_SOURCE_URL must be a valid URL")?;
+
+        let mapping_refresh_secs = env::var("SEADEXER_MAPPING_REFRESH_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(21_600);
+        let mapping_refresh_interval = Duration::from_secs(mapping_refresh_secs);
 
         let public_base_url = env::var("SEADEXER_PUBLIC_BASE_URL")
             .ok()
@@ -53,7 +67,7 @@ impl AppConfig {
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(timeout_secs);
-        let mapping_timeout = Duration::from_secs(mapping_timeout_secs);
+        let mapping_timeout = Duration::from_secs(mapping_timeout_secs.max(1));
 
         let application_title =
             env::var("SEADEXER_TITLE").unwrap_or_else(|_| "Seadexer".to_string());
@@ -84,7 +98,9 @@ impl AppConfig {
             public_base_url,
             releases_base_url,
             releases_timeout,
-            mapping_base_url,
+            data_path,
+            mapping_source_url,
+            mapping_refresh_interval,
             mapping_timeout,
             application_title,
             application_description,
