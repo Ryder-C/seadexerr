@@ -5,7 +5,10 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use anyhow::Context;
-use reqwest::Client;
+use reqwest::{
+    Client, StatusCode,
+    header::{ETAG, IF_NONE_MATCH},
+};
 use serde::Deserialize;
 use thiserror::Error;
 use tokio::fs;
@@ -25,6 +28,7 @@ pub struct PlexAniBridgeMappings {
 #[derive(Debug)]
 struct CachedMappings {
     modified: SystemTime,
+    etag: Option<String>,
     entries: Arc<HashMap<i64, Vec<MappingEntry>>>,
 }
 
@@ -100,9 +104,41 @@ impl PlexAniBridgeMappings {
     }
 
     async fn refresh_mappings(&self) -> Result<(), MappingError> {
-        let response = self
-            .client
-            .get(self.source_url.clone())
+        let etag_path = self.etag_path();
+        let cached_etag = {
+            let guard = self.cache.read().await;
+            guard.as_ref().and_then(|cache| cache.etag.clone())
+        };
+        let cached_etag = if let Some(etag) = cached_etag {
+            Some(etag)
+        } else {
+            match fs::read_to_string(&etag_path).await {
+                Ok(value) => {
+                    let trimmed = value.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_owned())
+                    }
+                }
+                Err(error) if error.kind() == ErrorKind::NotFound => None,
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        path = %etag_path.display(),
+                        "failed to read cached etag; proceeding without conditional request"
+                    );
+                    None
+                }
+            }
+        };
+
+        let mut request = self.client.get(self.source_url.clone());
+        if let Some(etag) = cached_etag {
+            request = request.header(IF_NONE_MATCH, etag);
+        }
+
+        let response = request
             .send()
             .await
             .map_err(|source| MappingError::Download {
@@ -110,12 +146,38 @@ impl PlexAniBridgeMappings {
                 url: self.source_url.clone(),
             })?;
 
+        if response.status() == StatusCode::NOT_MODIFIED {
+            debug!(
+                path = %self.path.display(),
+                url = %self.source_url,
+                "plexanibridge mappings not modified; skipping refresh"
+            );
+
+            let cache_missing = {
+                let guard = self.cache.read().await;
+                guard.is_none()
+            };
+
+            if cache_missing {
+                // ensure cache is hydrated so downstream calls can serve requests
+                self.load_mappings().await?;
+            }
+
+            return Ok(());
+        }
+
         let response = response
             .error_for_status()
             .map_err(|source| MappingError::Download {
                 source,
                 url: self.source_url.clone(),
             })?;
+
+        let new_etag = response
+            .headers()
+            .get(ETAG)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.to_owned());
 
         let bytes = response
             .bytes()
@@ -164,6 +226,22 @@ impl PlexAniBridgeMappings {
             }
         }
 
+        if let Some(ref etag) = new_etag {
+            fs::write(&etag_path, etag.as_bytes().to_vec())
+                .await
+                .map_err(|source| MappingError::Write {
+                    source,
+                    path: etag_path.clone(),
+                })?;
+        } else if let Err(error) = fs::remove_file(&etag_path).await
+            && error.kind() != ErrorKind::NotFound
+        {
+            return Err(MappingError::Remove {
+                source: error,
+                path: etag_path.clone(),
+            });
+        }
+
         let metadata = fs::metadata(&self.path)
             .await
             .map_err(|source| MappingError::Metadata {
@@ -181,6 +259,7 @@ impl PlexAniBridgeMappings {
             let mut guard = self.cache.write().await;
             *guard = Some(CachedMappings {
                 modified,
+                etag: new_etag.clone(),
                 entries: index.clone(),
             });
         }
@@ -220,6 +299,27 @@ impl PlexAniBridgeMappings {
                 path: self.path.clone(),
             })?;
 
+        let etag_path = self.etag_path();
+        let etag = match fs::read_to_string(&etag_path).await {
+            Ok(value) => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_owned())
+                }
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => None,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    path = %etag_path.display(),
+                    "failed to read cached etag while loading mappings"
+                );
+                None
+            }
+        };
+
         {
             let guard = self.cache.read().await;
             if let Some(cache) = guard.as_ref()
@@ -250,6 +350,7 @@ impl PlexAniBridgeMappings {
             let mut guard = self.cache.write().await;
             *guard = Some(CachedMappings {
                 modified,
+                etag,
                 entries: index.clone(),
             });
         }
@@ -262,6 +363,12 @@ impl PlexAniBridgeMappings {
         );
 
         Ok(index)
+    }
+
+    fn etag_path(&self) -> PathBuf {
+        let mut path = self.path.clone();
+        path.set_extension("etag");
+        path
     }
 
     fn build_index(raw: HashMap<String, RawMappingRecord>) -> HashMap<i64, Vec<MappingEntry>> {
