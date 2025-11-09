@@ -15,6 +15,7 @@ pub struct TorznabItem {
     pub title: String,
     pub guid: String,
     pub link: String,
+    pub comments: Option<String>,
     pub published: Option<OffsetDateTime>,
     pub size_bytes: u64,
     pub info_hash: Option<String>,
@@ -157,6 +158,10 @@ pub fn render_feed(
         write_text_element(&mut writer, "guid", &item.guid)?;
         write_text_element(&mut writer, "link", &item.link)?;
 
+        if let Some(comments) = item.comments.as_deref() {
+            write_text_element(&mut writer, "comments", comments)?;
+        }
+
         if let Some(published) = item.published {
             let formatted = published.format(&Rfc2822)?;
             write_text_element(&mut writer, "pubDate", &formatted)?;
@@ -169,7 +174,7 @@ pub fn render_feed(
         }
 
         let mut enclosure = BytesStart::new("enclosure");
-        enclosure.push_attribute(("url", item.link.as_str()));
+    enclosure.push_attribute(("url", item.link.as_str()));
         enclosure.push_attribute(("type", "application/x-bittorrent"));
         enclosure.push_attribute(("length", item.size_bytes.to_string().as_str()));
         writer.write_event(Event::Empty(enclosure))?;

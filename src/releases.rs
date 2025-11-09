@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use reqwest::{Client, Url};
@@ -58,10 +59,15 @@ impl ReleasesClient {
         let torrents: Vec<Torrent> = payload
             .items
             .into_iter()
-            .filter_map(|entry| entry.expand)
-            .flat_map(|expand| expand.trs.into_iter())
-            .filter(|record| rewritten_download_url(record).is_some())
-            .map(Torrent::from)
+            .flat_map(|entry| {
+                let al_id = entry.al_id;
+                entry.expand.into_iter().flat_map(move |expand| {
+                    expand.trs.into_iter().map(move |record| (al_id, record))
+                })
+            })
+            .filter(|(_, record)| rewritten_download_url(record).is_some())
+            .filter(|(_, record)| record.tracker == "Nyaa")
+            .map(|(al_id, record)| Torrent::from_record(record, al_id))
             .take(limit)
             .collect();
 
@@ -101,7 +107,78 @@ impl ReleasesClient {
             "releases.moe torrent list response received"
         );
 
-        Ok(payload.items.into_iter().map(Torrent::from).collect())
+        Ok(payload
+            .items
+            .into_iter()
+            .map(|record| Torrent::from_record(record, None))
+            .collect())
+    }
+
+    pub async fn resolve_anilist_ids_for_torrents(
+        &self,
+        torrent_ids: &[String],
+    ) -> Result<HashMap<String, i64>, ReleasesError> {
+        let mut result = HashMap::new();
+        if torrent_ids.is_empty() {
+            return Ok(result);
+        }
+
+        let unique: HashSet<String> = torrent_ids.iter().cloned().collect();
+        if unique.is_empty() {
+            return Ok(result);
+        }
+
+        let mut unique_ids: Vec<String> = unique.into_iter().collect();
+        unique_ids.sort_unstable();
+
+        const CHUNK_SIZE: usize = 20;
+
+        for chunk in unique_ids.chunks(CHUNK_SIZE.max(1)) {
+            let filter = chunk
+                .iter()
+                .map(|id| format!("(trs~'{}')", id))
+                .collect::<Vec<_>>()
+                .join(" || ");
+
+            if filter.is_empty() {
+                continue;
+            }
+
+            let mut url = self
+                .base_url
+                .join("collections/entries/records")
+                .map_err(ReleasesError::Url)?;
+
+            {
+                let mut pairs = url.query_pairs_mut();
+                pairs.append_pair("filter", &filter);
+                pairs.append_pair("expand", "trs");
+                let per_page = std::cmp::max(self.default_limit, chunk.len());
+                pairs.append_pair("perPage", &per_page.to_string());
+            }
+
+            let response = self.http.get(url).send().await?.error_for_status()?;
+            let payload: EntriesResponse = response.json().await?;
+
+            let requested: HashSet<&str> = chunk.iter().map(|id| id.as_str()).collect();
+
+            for entry in payload.items {
+                let Some(expand) = entry.expand else { continue };
+                let Some(al_id) = entry.al_id else { continue };
+
+                for record in expand.trs {
+                    if record.tracker != "Nyaa" {
+                        continue;
+                    }
+
+                    if requested.contains(record.id.as_str()) {
+                        result.insert(record.id, al_id);
+                    }
+                }
+            }
+        }
+
+        Ok(result)
     }
 }
 
@@ -112,6 +189,9 @@ struct EntriesResponse {
 
 #[derive(Debug, Clone, Deserialize)]
 struct EntryRecord {
+    #[serde(rename = "alID")]
+    #[serde(default)]
+    al_id: Option<i64>,
     #[serde(default)]
     expand: Option<EntryExpand>,
 }
@@ -126,16 +206,19 @@ struct EntryExpand {
 pub struct Torrent {
     pub id: String,
     pub download_url: String,
+    pub source_url: String,
     pub info_hash: Option<String>,
     pub published: Option<OffsetDateTime>,
     pub files: Vec<TorrentFile>,
     pub size_bytes: u64,
     pub is_best: bool,
+    pub anilist_id: Option<i64>,
 }
 
-impl From<TorrentRecord> for Torrent {
-    fn from(record: TorrentRecord) -> Self {
+impl Torrent {
+    fn from_record(record: TorrentRecord, anilist_id: Option<i64>) -> Self {
         let download_url = rewritten_download_url(&record).unwrap_or_else(|| record.url.clone());
+        let source_url = record.url.clone();
 
         let size_bytes = record.files.iter().map(|f| f.length).sum::<u64>();
         Torrent {
@@ -150,6 +233,8 @@ impl From<TorrentRecord> for Torrent {
             files: record.files,
             size_bytes,
             is_best: record.is_best,
+            anilist_id,
+            source_url,
         }
     }
 }
@@ -168,15 +253,16 @@ struct TorrentRecord {
     updated: Option<String>,
     #[serde(rename = "isBest")]
     is_best: bool,
+    #[serde(default)]
+    tracker: String,
     files: Vec<TorrentFile>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TorrentFile {
     pub length: u64,
-    #[allow(dead_code)]
     #[serde(rename = "name")]
-    pub _name: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::HashMap};
 
 use axum::{
     Json, Router,
@@ -16,7 +16,10 @@ use url::Url;
 use crate::releases::{ReleasesError, Torrent};
 use crate::torznab::{self, ChannelMetadata, TorznabItem};
 use crate::{AppState, SharedAppState};
-use crate::{mapping::MappingError, sonarr::SonarrError};
+use crate::{
+    mapping::{MappingError, TvdbMapping},
+    sonarr::SonarrError,
+};
 
 pub fn router(state: SharedAppState) -> Router {
     Router::new()
@@ -172,21 +175,65 @@ async fn respond_generic_search(
         offset, "serving torznab search via recent public torrents"
     );
 
-    let fetch_limit = offset.saturating_add(limit).min(state.config.default_limit);
+    let fetch_limit = state.config.default_limit;
     let torrents = state
         .releases
         .recent_public_torrents(fetch_limit)
         .await
         .map_err(HttpError::Releases)?;
 
-    let total = torrents.len();
+    let season_packs: Vec<Torrent> = torrents
+        .into_iter()
+        .filter(|torrent| torrent.files.len() > 1)
+        .collect();
 
-    let items: Vec<TorznabItem> = torrents
+    let total = season_packs.len();
+
+    let window: Vec<Torrent> = season_packs
         .into_iter()
         .skip(offset)
         .take(limit)
-        .map(map_torrent_search)
         .collect();
+
+    if window.is_empty() {
+        let xml = torznab::render_feed(&metadata, &[], offset, total)?;
+        return Ok((
+            [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+            xml,
+        )
+            .into_response());
+    }
+
+    let missing_ids: Vec<String> = window
+        .iter()
+        .filter(|torrent| torrent.anilist_id.is_none())
+        .map(|torrent| torrent.id.clone())
+        .collect();
+
+    let resolved_anilist = if missing_ids.is_empty() {
+        HashMap::new()
+    } else {
+        state
+            .releases
+            .resolve_anilist_ids_for_torrents(&missing_ids)
+            .await
+            .map_err(HttpError::Releases)?
+    };
+
+    let mut title_cache: HashMap<(i64, u32), String> = HashMap::new();
+    let mut items = Vec::with_capacity(window.len());
+
+    for mut torrent in window.into_iter() {
+        if torrent.anilist_id.is_none() {
+            if let Some(anilist_id) = resolved_anilist.get(&torrent.id).copied() {
+                torrent.anilist_id = Some(anilist_id);
+            }
+        }
+
+        let title = resolve_generic_search_title(state, &torrent, &mut title_cache).await?;
+        items.push(build_torznab_item(torrent, title));
+    }
+
     let xml = torznab::render_feed(&metadata, &items, offset, total)?;
 
     Ok((
@@ -292,7 +339,7 @@ async fn respond_tv_search(state: &AppState, query: &TorznabQuery) -> Result<Res
         .filter(|item| item.files.len() > 1)
         .skip(offset)
         .take(limit)
-        .map(|torrent| map_torrent_tvsearch(torrent, feed_title.clone()))
+        .map(|torrent| build_torznab_item(torrent, feed_title.clone()))
         .collect();
     let xml = torznab::render_feed(&metadata, &items, offset, total)?;
 
@@ -333,49 +380,109 @@ fn build_channel_metadata(state: &AppState) -> Result<ChannelMetadata, HttpError
     })
 }
 
-fn map_torrent_search(torrent: crate::releases::Torrent) -> TorznabItem {
+async fn resolve_generic_search_title(
+    state: &AppState,
+    torrent: &crate::releases::Torrent,
+    cache: &mut HashMap<(i64, u32), String>,
+) -> Result<String, HttpError> {
+    let Some(anilist_id) = torrent.anilist_id else {
+        return Ok(default_torrent_title(&torrent.id));
+    };
+
+    let mappings = state
+        .mappings
+        .resolve_tvdb_mappings(anilist_id)
+        .await
+        .map_err(HttpError::Mapping)?;
+
+    if mappings.is_empty() {
+        return Ok(default_torrent_title(&torrent.id));
+    }
+
+    if let Some((tvdb_id, season)) = select_tvdb_and_season(&mappings) {
+        if let Some(existing) = cache.get(&(tvdb_id, season)) {
+            return Ok(existing.clone());
+        }
+
+        let title = resolve_feed_title(state, tvdb_id, season).await?;
+        cache.insert((tvdb_id, season), title.clone());
+        return Ok(title);
+    }
+
+    Ok(default_torrent_title(&torrent.id))
+}
+
+fn select_tvdb_and_season(mappings: &[TvdbMapping]) -> Option<(i64, u32)> {
+    let mut best: Option<(i64, u32)> = None;
+
+    for mapping in mappings {
+        let mut seasons: Vec<u32> = mapping
+            .seasons
+            .iter()
+            .filter_map(|key| parse_season_key(key))
+            .collect();
+
+        if seasons.is_empty() {
+            continue;
+        }
+
+        seasons.sort_unstable();
+        let season = seasons[0];
+
+        match best {
+            Some((_, current)) if season >= current => {}
+            _ => best = Some((mapping.tvdb_id, season)),
+        }
+    }
+
+    best
+}
+
+fn parse_season_key(key: &str) -> Option<u32> {
+    if !key.starts_with('s') {
+        return None;
+    }
+
+    let digits: String = key[1..]
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect();
+    if digits.is_empty() {
+        return None;
+    }
+
+    digits.parse().ok()
+}
+
+fn default_torrent_title(id: &str) -> String {
+    format!("Torrent {id}")
+}
+
+fn build_torznab_item(torrent: crate::releases::Torrent, title: String) -> TorznabItem {
     let crate::releases::Torrent {
         id,
         download_url,
+        source_url,
         info_hash,
         published,
         size_bytes,
         is_best,
         files: _,
+        anilist_id: _,
     } = torrent;
 
-    let title = format!("Torrent {}", id);
     let seeders = if is_best { 1000 } else { 100 };
+    let comments = if source_url.is_empty() {
+        None
+    } else {
+        Some(source_url)
+    };
 
     TorznabItem {
         title,
         guid: id,
         link: download_url,
-        published,
-        size_bytes,
-        info_hash,
-        seeders,
-        leechers: 0,
-    }
-}
-
-fn map_torrent_tvsearch(torrent: crate::releases::Torrent, override_title: String) -> TorznabItem {
-    let crate::releases::Torrent {
-        id,
-        download_url,
-        info_hash,
-        published,
-        size_bytes,
-        is_best,
-        files: _,
-    } = torrent;
-
-    let seeders = if is_best { 1000 } else { 100 };
-
-    TorznabItem {
-        title: override_title,
-        guid: id,
-        link: download_url,
+        comments,
         published,
         size_bytes,
         info_hash,
