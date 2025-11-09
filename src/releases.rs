@@ -190,9 +190,7 @@ struct EntriesResponse {
 #[derive(Debug, Clone, Deserialize)]
 struct EntryRecord {
     #[serde(rename = "alID")]
-    #[serde(default)]
     al_id: Option<i64>,
-    #[serde(default)]
     expand: Option<EntryExpand>,
 }
 
@@ -244,12 +242,9 @@ struct TorrentRecord {
     id: String,
     #[serde(default)]
     url: String,
-    #[serde(default)]
     #[serde(rename = "infoHash")]
     info_hash: Option<String>,
-    #[serde(default)]
     created: Option<String>,
-    #[serde(default)]
     updated: Option<String>,
     #[serde(rename = "isBest")]
     is_best: bool,

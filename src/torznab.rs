@@ -174,7 +174,7 @@ pub fn render_feed(
         }
 
         let mut enclosure = BytesStart::new("enclosure");
-    enclosure.push_attribute(("url", item.link.as_str()));
+        enclosure.push_attribute(("url", item.link.as_str()));
         enclosure.push_attribute(("type", "application/x-bittorrent"));
         enclosure.push_attribute(("length", item.size_bytes.to_string().as_str()));
         writer.write_event(Event::Empty(enclosure))?;

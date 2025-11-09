@@ -189,11 +189,7 @@ async fn respond_generic_search(
 
     let total = season_packs.len();
 
-    let window: Vec<Torrent> = season_packs
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .collect();
+    let window: Vec<Torrent> = season_packs.into_iter().skip(offset).take(limit).collect();
 
     if window.is_empty() {
         let xml = torznab::render_feed(&metadata, &[], offset, total)?;
@@ -224,10 +220,10 @@ async fn respond_generic_search(
     let mut items = Vec::with_capacity(window.len());
 
     for mut torrent in window.into_iter() {
-        if torrent.anilist_id.is_none() {
-            if let Some(anilist_id) = resolved_anilist.get(&torrent.id).copied() {
-                torrent.anilist_id = Some(anilist_id);
-            }
+        if torrent.anilist_id.is_none()
+            && let Some(anilist_id) = resolved_anilist.get(&torrent.id).copied()
+        {
+            torrent.anilist_id = Some(anilist_id);
         }
 
         let title = resolve_generic_search_title(state, &torrent, &mut title_cache).await?;
