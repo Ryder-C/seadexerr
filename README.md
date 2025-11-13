@@ -62,10 +62,10 @@ In Sonarr:
 
 ## Future Plans
 
-- [ ] RSS Refresh
 - [ ] Movie Support
 - [ ] Specials Support
 - [ ] Episode Support
+- [x] RSS Refresh
 - [x] Local PlexAniBridge Mappings
 
 This project uses [PlexAniBridge Mappings](https://github.com/eliasbenb/PlexAniBridge-Mappings).

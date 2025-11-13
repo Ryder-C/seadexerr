@@ -40,8 +40,8 @@ impl ReleasesClient {
 
         {
             let mut pairs = url.query_pairs_mut();
-            pairs.append_pair("filter", &format!("(alID={anilist_id})"));
             pairs.append_pair("expand", "trs");
+            pairs.append_pair("filter", &format!("(alID={anilist_id})"));
             pairs.append_pair("page", "1");
             pairs.append_pair("perPage", &limit.min(self.default_limit).to_string());
         }
@@ -65,8 +65,8 @@ impl ReleasesClient {
                     expand.trs.into_iter().map(move |record| (al_id, record))
                 })
             })
-            .filter(|(_, record)| rewritten_download_url(record).is_some())
             .filter(|(_, record)| record.tracker == "Nyaa")
+            .filter(|(_, record)| rewritten_download_url(record).is_some())
             .map(|(al_id, record)| Torrent::from_record(record, al_id))
             .take(limit)
             .collect();
@@ -86,32 +86,44 @@ impl ReleasesClient {
     ) -> Result<Vec<Torrent>, ReleasesError> {
         let mut url = self
             .base_url
-            .join("collections/torrents/records")
+            .join("collections/entries/records")
             .map_err(ReleasesError::Url)?;
 
         {
             let mut pairs = url.query_pairs_mut();
-            pairs.append_pair("filter", "(tracker='Nyaa')");
+            pairs.append_pair("expand", "trs");
             pairs.append_pair("sort", "-updated");
+            pairs.append_pair("filter", "(trs.tracker='Nyaa' && trs.files:length>1)");
             pairs.append_pair("page", "1");
             pairs.append_pair("perPage", &limit.min(self.default_limit).to_string());
         }
 
         let response = self.http.get(url).send().await?.error_for_status()?;
-        let payload: TorrentsResponse = response.json().await?;
+        let payload: EntriesResponse = response.json().await?;
+
+        let torrents: Vec<Torrent> = payload
+            .items
+            .into_iter()
+            .flat_map(|entry| {
+                let al_id = entry.al_id;
+                entry
+                    .expand
+                    .into_iter()
+                    .flat_map(move |expand| expand.trs.into_iter().map(move |record| (al_id, record)))
+            })
+            .filter(|(_, record)| rewritten_download_url(record).is_some())
+            .map(|(al_id, record)| Torrent::from_record(record, al_id))
+            .take(limit)
+            .collect();
 
         debug!(
             feed = "recent-public",
             limit,
-            returned = payload.items.len(),
-            "releases.moe torrent list response received"
+            returned = torrents.len(),
+            "releases.moe entries response received"
         );
 
-        Ok(payload
-            .items
-            .into_iter()
-            .map(|record| Torrent::from_record(record, None))
-            .collect())
+        Ok(torrents)
     }
 
     pub async fn resolve_anilist_ids_for_torrents(
@@ -258,11 +270,6 @@ pub struct TorrentFile {
     pub length: u64,
     #[serde(rename = "name")]
     pub name: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct TorrentsResponse {
-    items: Vec<TorrentRecord>,
 }
 
 fn parse_timestamp(value: &str) -> Option<OffsetDateTime> {
