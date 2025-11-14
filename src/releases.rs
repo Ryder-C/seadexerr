@@ -93,7 +93,6 @@ impl ReleasesClient {
             let mut pairs = url.query_pairs_mut();
             pairs.append_pair("expand", "trs");
             pairs.append_pair("sort", "-updated");
-            pairs.append_pair("filter", "(trs.tracker='Nyaa' && trs.files:length>1)");
             pairs.append_pair("page", "1");
             pairs.append_pair("perPage", &limit.min(self.default_limit).to_string());
         }
@@ -111,6 +110,8 @@ impl ReleasesClient {
                     .into_iter()
                     .flat_map(move |expand| expand.trs.into_iter().map(move |record| (al_id, record)))
             })
+            .filter(|(_, record)| record.tracker == "Nyaa")
+            .filter(|(_, record)| record.files.len() > 1)
             .filter(|(_, record)| rewritten_download_url(record).is_some())
             .map(|(al_id, record)| Torrent::from_record(record, al_id))
             .take(limit)
