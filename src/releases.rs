@@ -105,16 +105,13 @@ impl ReleasesClient {
             .into_iter()
             .flat_map(|entry| {
                 let al_id = entry.al_id;
-                entry
-                    .expand
-                    .into_iter()
-                    .flat_map(move |expand| expand.trs.into_iter().map(move |record| (al_id, record)))
+                entry.expand.into_iter().flat_map(move |expand| {
+                    expand.trs.into_iter().map(move |record| (al_id, record))
+                })
             })
             .filter(|(_, record)| record.tracker == "Nyaa")
-            .filter(|(_, record)| record.files.len() > 1)
             .filter(|(_, record)| rewritten_download_url(record).is_some())
             .map(|(al_id, record)| Torrent::from_record(record, al_id))
-            .take(limit)
             .collect();
 
         debug!(

@@ -1,3 +1,4 @@
+mod anilist;
 mod config;
 mod http;
 mod mapping;
@@ -11,6 +12,7 @@ use anyhow::Context;
 use tokio::net::TcpListener;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
+use crate::anilist::AniListClient;
 use crate::config::AppConfig;
 use crate::mapping::PlexAniBridgeMappings;
 use crate::releases::ReleasesClient;
@@ -19,6 +21,7 @@ use crate::sonarr::SonarrClient;
 #[derive(Clone)]
 pub struct AppState {
     pub config: AppConfig,
+    pub anilist: AniListClient,
     pub sonarr: SonarrClient,
     pub releases: ReleasesClient,
     pub mappings: PlexAniBridgeMappings,
@@ -39,10 +42,15 @@ async fn main() -> anyhow::Result<()> {
     )
     .context("failed to construct releases.moe client")?;
 
+    let anilist = AniListClient::new(config.anilist_base_url.clone(), config.anilist_timeout)
+        .context("failed to construct AniList client")?;
+
+    let sonarr_cache_path = config.data_path.join("sonarr_titles.json");
     let sonarr = SonarrClient::new(
         config.sonarr_url.clone(),
         config.sonarr_api_key.clone(),
         config.sonarr_timeout,
+        sonarr_cache_path,
     )
     .context("failed to construct Sonarr client")?;
 
@@ -57,6 +65,7 @@ async fn main() -> anyhow::Result<()> {
 
     let state = Arc::new(AppState {
         config,
+        anilist,
         sonarr,
         releases,
         mappings,

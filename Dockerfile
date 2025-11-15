@@ -1,4 +1,4 @@
-FROM rust:1.90.0-slim
+FROM rust:1.91.1-slim
 
 ARG APP_USER=appuser
 ARG APP_UID=1000

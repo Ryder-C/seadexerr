@@ -13,10 +13,11 @@ use thiserror::Error;
 use tracing::{debug, info};
 use url::Url;
 
+use crate::anilist::{AniListError, MediaFormat};
 use crate::releases::{ReleasesError, Torrent};
 use crate::torznab::{self, ChannelMetadata, TorznabItem};
-use crate::{AppState, SharedAppState};
 use crate::{
+    AppState, SharedAppState,
     mapping::{MappingError, TvdbMapping},
     sonarr::SonarrError,
 };
@@ -77,6 +78,13 @@ enum TorznabOperation<'a> {
     Search,
     TvSearch,
     Unsupported(&'a str),
+}
+
+fn format_allowed(format: &MediaFormat) -> bool {
+    matches!(
+        format,
+        MediaFormat::Tv | MediaFormat::TvShort | MediaFormat::Ona
+    )
 }
 
 async fn torznab_handler(
@@ -216,14 +224,53 @@ async fn respond_generic_search(
             .map_err(HttpError::Releases)?
     };
 
+    let window: Vec<Torrent> = window
+        .into_iter()
+        .map(|mut torrent| {
+            if torrent.anilist_id.is_none()
+                && let Some(anilist_id) = resolved_anilist.get(&torrent.id).copied()
+            {
+                torrent.anilist_id = Some(anilist_id);
+            }
+            torrent
+        })
+        .collect();
+
+    let anilist_ids: Vec<i64> = window
+        .iter()
+        .filter_map(|torrent| torrent.anilist_id)
+        .collect();
+
+    let media_lookup = state
+        .anilist
+        .fetch_media(&anilist_ids)
+        .await
+        .map_err(HttpError::AniList)?;
+
     let mut title_cache: HashMap<(i64, u32), String> = HashMap::new();
     let mut items = Vec::with_capacity(window.len());
 
-    for mut torrent in window.into_iter() {
-        if torrent.anilist_id.is_none()
-            && let Some(anilist_id) = resolved_anilist.get(&torrent.id).copied()
-        {
-            torrent.anilist_id = Some(anilist_id);
+    for torrent in window.into_iter() {
+        let Some(anilist_id) = torrent.anilist_id else {
+            debug!(torrent_id = %torrent.id, "skipping torrent without AniList id");
+            continue;
+        };
+
+        let Some(media) = media_lookup.get(&anilist_id) else {
+            debug!(
+                anilist_id,
+                "skipping torrent due to missing AniList metadata"
+            );
+            continue;
+        };
+
+        if !format_allowed(&media.format) {
+            debug!(
+                anilist_id,
+                format = ?media.format,
+                "skipping torrent due to unsupported AniList format"
+            );
+            continue;
         }
 
         let title = resolve_generic_search_title(state, &torrent, &mut title_cache).await?;
@@ -283,42 +330,82 @@ async fn respond_tv_search(state: &AppState, query: &TorznabQuery) -> Result<Res
 
     debug!(tvdb_id, season, limit, "resolving plexanibridge mapping");
 
-    let anilist_id = state
+    let anilist_id = match state
         .mappings
         .resolve_anilist_id(tvdb_id, season)
         .await
-        .map_err(HttpError::Mapping)?;
+        .map_err(HttpError::Mapping)?
+    {
+        Some(id) => id,
+        None => {
+            info!(
+                tvdb_id,
+                season, "no anilist mapping found; returning empty result set"
+            );
+            let xml = torznab::render_feed(&metadata, &[], offset, 0)?;
+            return Ok((
+                [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+                xml,
+            )
+                .into_response());
+        }
+    };
 
-    debug!(tvdb_id, season, ?anilist_id, "mapping lookup completed");
+    debug!(tvdb_id, season, anilist_id, "querying releases.moe");
 
     let fetch_limit = offset.saturating_add(limit).min(state.config.default_limit);
-
-    let collected: Vec<Torrent> = if let Some(anilist_id) = anilist_id {
-        debug!(tvdb_id, season, anilist_id, "querying releases.moe");
-        match state
-            .releases
-            .search_torrents(anilist_id, fetch_limit)
-            .await
-        {
-            Ok(torrents) => torrents,
-            Err(err) => {
-                tracing::error!(
-                    tvdb_id,
-                    season,
-                    anilist_id,
-                    error = %err,
-                    "releases.moe lookup failed"
-                );
-                return Err(HttpError::Releases(err));
-            }
+    let collected: Vec<Torrent> = match state
+        .releases
+        .search_torrents(anilist_id, fetch_limit)
+        .await
+    {
+        Ok(torrents) => torrents,
+        Err(err) => {
+            tracing::error!(
+                tvdb_id,
+                season,
+                anilist_id,
+                error = %err,
+                "releases.moe lookup failed"
+            );
+            return Err(HttpError::Releases(err));
         }
-    } else {
+    };
+
+    let media_lookup = state
+        .anilist
+        .fetch_media(&[anilist_id])
+        .await
+        .map_err(HttpError::AniList)?;
+
+    let Some(media) = media_lookup.get(&anilist_id) else {
         info!(
             tvdb_id,
-            season, "no anilist mapping found; returning empty result set"
+            season, anilist_id, "AniList media missing; returning empty result set"
         );
-        Vec::new()
+        let xml = torznab::render_feed(&metadata, &[], offset, 0)?;
+        return Ok((
+            [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+            xml,
+        )
+            .into_response());
     };
+
+    if !format_allowed(&media.format) {
+        info!(
+            tvdb_id,
+            season,
+            anilist_id,
+            format = ?media.format,
+            "AniList format currently unsupported; returning empty result set"
+        );
+        let xml = torznab::render_feed(&metadata, &[], offset, 0)?;
+        return Ok((
+            [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+            xml,
+        )
+            .into_response());
+    }
 
     debug!(
         tvdb_id,
@@ -531,6 +618,8 @@ pub enum HttpError {
     #[error(transparent)]
     Torznab(#[from] torznab::TorznabBuildError),
     #[error(transparent)]
+    AniList(#[from] AniListError),
+    #[error(transparent)]
     Sonarr(#[from] SonarrError),
 }
 
@@ -559,6 +648,10 @@ impl IntoResponse for HttpError {
             HttpError::Torznab(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Cow::from("Failed to render torznab payload"),
+            ),
+            HttpError::AniList(_) => (
+                StatusCode::BAD_GATEWAY,
+                Cow::from("Failed to query AniList"),
             ),
             HttpError::Sonarr(SonarrError::Url(_)) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
