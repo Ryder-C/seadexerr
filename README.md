@@ -10,7 +10,7 @@ A Prowlarr indexer for [Seadex](https://releases.moe/) torrents. Always get the 
 ```yaml
 services:
   seadexerr:
-    image: ghcr.io/ryder-c/seadexerr:main
+    image: ghcr.io/ryder-c/seadexerr:latest
     container_name: seadexerr
     environment:
       - SONARR_BASE_URL=http://localhost:8989/
