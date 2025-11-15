@@ -15,6 +15,7 @@ pub struct TorznabItem {
     pub title: String,
     pub guid: String,
     pub link: String,
+    pub comments: Option<String>,
     pub published: Option<OffsetDateTime>,
     pub size_bytes: u64,
     pub info_hash: Option<String>,
@@ -156,6 +157,10 @@ pub fn render_feed(
         write_text_element(&mut writer, "title", &item.title)?;
         write_text_element(&mut writer, "guid", &item.guid)?;
         write_text_element(&mut writer, "link", &item.link)?;
+
+        if let Some(comments) = item.comments.as_deref() {
+            write_text_element(&mut writer, "comments", comments)?;
+        }
 
         if let Some(published) = item.published {
             let formatted = published.format(&Rfc2822)?;

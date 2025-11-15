@@ -16,6 +16,8 @@ pub struct AppConfig {
     pub application_title: String,
     pub application_description: String,
     pub default_limit: usize,
+    pub anilist_base_url: Url,
+    pub anilist_timeout: Duration,
     pub sonarr_url: Url,
     pub sonarr_api_key: String,
     pub sonarr_timeout: Duration,
@@ -80,6 +82,17 @@ impl AppConfig {
             .filter(|value| *value > 0)
             .unwrap_or(100);
 
+        let raw_anilist_url = env::var("SEADEXER_ANILIST_BASE_URL")
+            .unwrap_or_else(|_| "https://graphql.anilist.co".to_string());
+        let anilist_base_url = Url::parse(&raw_anilist_url)
+            .context("SEADEXER_ANILIST_BASE_URL must be a valid URL")?;
+
+        let anilist_timeout_secs = env::var("SEADEXER_ANILIST_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(timeout_secs);
+        let anilist_timeout = Duration::from_secs(anilist_timeout_secs.max(1));
+
         let raw_sonarr_url =
             env::var("SONARR_BASE_URL").unwrap_or_else(|_| "http://localhost:8989".to_string());
         let sonarr_url = parse_root_url(&raw_sonarr_url, "SONARR_BASE_URL")?;
@@ -90,8 +103,8 @@ impl AppConfig {
         let sonarr_timeout_secs = env::var("SONARR_TIMEOUT_SECS")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(10);
-        let sonarr_timeout = Duration::from_secs(sonarr_timeout_secs);
+            .unwrap_or(timeout_secs);
+        let sonarr_timeout = Duration::from_secs(sonarr_timeout_secs.max(1));
 
         Ok(Self {
             listen_addr,
@@ -105,6 +118,8 @@ impl AppConfig {
             application_title,
             application_description,
             default_limit,
+            anilist_base_url,
+            anilist_timeout,
             sonarr_url,
             sonarr_api_key,
             sonarr_timeout,

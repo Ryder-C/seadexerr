@@ -29,13 +29,31 @@ pub struct PlexAniBridgeMappings {
 struct CachedMappings {
     modified: SystemTime,
     etag: Option<String>,
-    entries: Arc<HashMap<i64, Vec<MappingEntry>>>,
+    entries: Arc<MappingIndex>,
 }
 
 #[derive(Debug, Clone)]
 struct MappingEntry {
     anilist_id: i64,
     seasons: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ReverseMappingEntry {
+    tvdb_id: i64,
+    seasons: Vec<String>,
+}
+
+#[derive(Debug)]
+struct MappingIndex {
+    tvdb_to_entries: HashMap<i64, Vec<MappingEntry>>,
+    anilist_to_entries: HashMap<i64, Vec<ReverseMappingEntry>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TvdbMapping {
+    pub tvdb_id: i64,
+    pub seasons: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -190,8 +208,12 @@ impl PlexAniBridgeMappings {
 
         let raw: HashMap<String, RawMappingRecord> = serde_json::from_slice(&bytes)?;
         let index = Self::build_index(raw);
-        let series = index.len();
-        let entries = index.values().map(|group| group.len()).sum::<usize>();
+        let series = index.tvdb_to_entries.len();
+        let entries = index
+            .tvdb_to_entries
+            .values()
+            .map(|group| group.len())
+            .sum::<usize>();
         let index = Arc::new(index);
 
         let temp_path = self.path.with_extension("json.tmp");
@@ -275,7 +297,7 @@ impl PlexAniBridgeMappings {
         Ok(())
     }
 
-    async fn load_mappings(&self) -> Result<Arc<HashMap<i64, Vec<MappingEntry>>>, MappingError> {
+    async fn load_mappings(&self) -> Result<Arc<MappingIndex>, MappingError> {
         let metadata = match fs::metadata(&self.path).await {
             Ok(metadata) => metadata,
             Err(source) if source.kind() == ErrorKind::NotFound => {
@@ -342,8 +364,12 @@ impl PlexAniBridgeMappings {
 
         let raw: HashMap<String, RawMappingRecord> = serde_json::from_slice(&contents)?;
         let index = Self::build_index(raw);
-        let series = index.len();
-        let entries = index.values().map(|group| group.len()).sum::<usize>();
+        let series = index.tvdb_to_entries.len();
+        let entries = index
+            .tvdb_to_entries
+            .values()
+            .map(|group| group.len())
+            .sum::<usize>();
         let index = Arc::new(index);
 
         {
@@ -371,8 +397,9 @@ impl PlexAniBridgeMappings {
         path
     }
 
-    fn build_index(raw: HashMap<String, RawMappingRecord>) -> HashMap<i64, Vec<MappingEntry>> {
-        let mut index: HashMap<i64, Vec<MappingEntry>> = HashMap::new();
+    fn build_index(raw: HashMap<String, RawMappingRecord>) -> MappingIndex {
+        let mut tvdb_index: HashMap<i64, Vec<MappingEntry>> = HashMap::new();
+        let mut anilist_index: HashMap<i64, Vec<ReverseMappingEntry>> = HashMap::new();
 
         for (anilist_id_str, record) in raw {
             let Some(tvdb_id) = record.tvdb_id else {
@@ -393,13 +420,20 @@ impl PlexAniBridgeMappings {
             }
 
             let seasons = record.tvdb_mappings.into_keys().collect::<Vec<_>>();
-            index.entry(tvdb_id).or_default().push(MappingEntry {
+            tvdb_index.entry(tvdb_id).or_default().push(MappingEntry {
                 anilist_id,
-                seasons,
+                seasons: seasons.clone(),
             });
+            anilist_index
+                .entry(anilist_id)
+                .or_default()
+                .push(ReverseMappingEntry { tvdb_id, seasons });
         }
 
-        index
+        MappingIndex {
+            tvdb_to_entries: tvdb_index,
+            anilist_to_entries: anilist_index,
+        }
     }
 
     pub async fn resolve_anilist_id(
@@ -410,7 +444,7 @@ impl PlexAniBridgeMappings {
         let mappings = self.load_mappings().await?;
         let season_key = format!("s{season}");
 
-        if let Some(entries) = mappings.get(&tvdb_id) {
+        if let Some(entries) = mappings.tvdb_to_entries.get(&tvdb_id) {
             debug!(
                 tvdb_id,
                 season,
@@ -439,6 +473,29 @@ impl PlexAniBridgeMappings {
         );
 
         Ok(None)
+    }
+
+    pub async fn resolve_tvdb_mappings(
+        &self,
+        anilist_id: i64,
+    ) -> Result<Vec<TvdbMapping>, MappingError> {
+        let mappings = self.load_mappings().await?;
+
+        let result = mappings
+            .anilist_to_entries
+            .get(&anilist_id)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .map(|entry| TvdbMapping {
+                        tvdb_id: entry.tvdb_id,
+                        seasons: entry.seasons.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(result)
     }
 }
 
