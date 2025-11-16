@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::ErrorKind,
     path::{Path, PathBuf},
     sync::Arc,
@@ -90,6 +90,29 @@ impl SonarrClient {
         self.store_title(tvdb_id, &title).await?;
 
         Ok(title)
+    }
+
+    pub async fn retain_titles(&self, keep: &HashSet<i64>) -> Result<(), SonarrError> {
+        if keep.is_empty() {
+            let mut guard = self.cache.write().await;
+            if guard.is_empty() {
+                return Ok(());
+            }
+            guard.clear();
+            drop(guard);
+            return self.persist_cache().await;
+        }
+
+        let mut guard = self.cache.write().await;
+        let original_len = guard.len();
+        guard.retain(|tvdb_id, _| keep.contains(tvdb_id));
+
+        if guard.len() == original_len {
+            return Ok(());
+        }
+
+        drop(guard);
+        self.persist_cache().await
     }
 
     async fn cached_title(&self, tvdb_id: i64) -> Option<String> {
