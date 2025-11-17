@@ -13,7 +13,7 @@ use serde::Deserialize;
 use thiserror::Error;
 use tokio::fs;
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 use url::Url;
 
 #[derive(Debug, Clone)]
@@ -415,7 +415,7 @@ impl PlexAniBridgeMappings {
             };
 
             if record.tvdb_mappings.is_empty() {
-                debug!(anilist_id, tvdb_id, "skipping mapping with no season data");
+                trace!(anilist_id, tvdb_id, "skipping mapping with no season data");
                 continue;
             }
 
