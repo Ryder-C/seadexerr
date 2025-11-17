@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashMap};
+use std::{borrow::Cow, collections::{HashMap, HashSet}};
 
 use axum::{
     Json, Router,
@@ -248,6 +248,7 @@ async fn respond_generic_search(
         .map_err(HttpError::AniList)?;
 
     let mut title_cache: HashMap<(i64, u32), String> = HashMap::new();
+    let mut active_tvdb_ids: HashSet<i64> = HashSet::new();
     let mut items = Vec::with_capacity(window.len());
 
     for torrent in window.into_iter() {
@@ -273,11 +274,23 @@ async fn respond_generic_search(
             continue;
         }
 
-        let title = resolve_generic_search_title(state, &torrent, &mut title_cache).await?;
+        let title = resolve_generic_search_title(
+            state,
+            &torrent,
+            &mut title_cache,
+            &mut active_tvdb_ids,
+        )
+        .await?;
         items.push(build_torznab_item(torrent, title));
     }
 
     let xml = torznab::render_feed(&metadata, &items, offset, total)?;
+
+    state
+        .sonarr
+        .retain_titles(&active_tvdb_ids)
+        .await
+        .map_err(HttpError::Sonarr)?;
 
     Ok((
         [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
@@ -467,6 +480,7 @@ async fn resolve_generic_search_title(
     state: &AppState,
     torrent: &crate::releases::Torrent,
     cache: &mut HashMap<(i64, u32), String>,
+    active_tvdb_ids: &mut HashSet<i64>,
 ) -> Result<String, HttpError> {
     let Some(anilist_id) = torrent.anilist_id else {
         return Ok(default_torrent_title(&torrent.id));
@@ -483,6 +497,8 @@ async fn resolve_generic_search_title(
     }
 
     if let Some((tvdb_id, season)) = select_tvdb_and_season(&mappings) {
+        active_tvdb_ids.insert(tvdb_id);
+
         if let Some(existing) = cache.get(&(tvdb_id, season)) {
             return Ok(existing.clone());
         }

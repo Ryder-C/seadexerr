@@ -41,7 +41,7 @@ impl ReleasesClient {
         {
             let mut pairs = url.query_pairs_mut();
             pairs.append_pair("expand", "trs");
-            pairs.append_pair("filter", &format!("(alID={anilist_id})"));
+            pairs.append_pair("filter", &format!("(alID={anilist_id})&&incomplete=false"));
             pairs.append_pair("page", "1");
             pairs.append_pair("perPage", &limit.min(self.default_limit).to_string());
         }
@@ -66,6 +66,7 @@ impl ReleasesClient {
                 })
             })
             .filter(|(_, record)| record.tracker == "Nyaa")
+            .filter(|(_, record)| !record.tags.contains(&"Incomplete".to_string()))
             .filter(|(_, record)| rewritten_download_url(record).is_some())
             .map(|(al_id, record)| Torrent::from_record(record, al_id))
             .take(limit)
@@ -93,6 +94,7 @@ impl ReleasesClient {
             let mut pairs = url.query_pairs_mut();
             pairs.append_pair("expand", "trs");
             pairs.append_pair("sort", "-updated");
+            pairs.append_pair("filter", "(incomplete=false)");
             pairs.append_pair("page", "1");
             pairs.append_pair("perPage", &limit.min(self.default_limit).to_string());
         }
@@ -110,6 +112,7 @@ impl ReleasesClient {
                 })
             })
             .filter(|(_, record)| record.tracker == "Nyaa")
+            .filter(|(_, record)| !record.tags.contains(&"Incomplete".to_string()))
             .filter(|(_, record)| rewritten_download_url(record).is_some())
             .map(|(al_id, record)| Torrent::from_record(record, al_id))
             .collect();
@@ -258,6 +261,7 @@ struct TorrentRecord {
     updated: Option<String>,
     #[serde(rename = "isBest")]
     is_best: bool,
+    tags: Vec<String>,
     #[serde(default)]
     tracker: String,
     files: Vec<TorrentFile>,
