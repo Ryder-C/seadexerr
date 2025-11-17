@@ -1,4 +1,7 @@
-use std::{borrow::Cow, collections::{HashMap, HashSet}};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+};
 
 use axum::{
     Json, Router,
@@ -274,13 +277,9 @@ async fn respond_generic_search(
             continue;
         }
 
-        let title = resolve_generic_search_title(
-            state,
-            &torrent,
-            &mut title_cache,
-            &mut active_tvdb_ids,
-        )
-        .await?;
+        let title =
+            resolve_generic_search_title(state, &torrent, &mut title_cache, &mut active_tvdb_ids)
+                .await?;
         items.push(build_torznab_item(torrent, title));
     }
 
