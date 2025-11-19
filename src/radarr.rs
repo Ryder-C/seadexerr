@@ -7,18 +7,24 @@ use std::{
 };
 
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{fs as async_fs, sync::RwLock};
 use tracing::debug;
 use url::Url;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RadarrMovie {
+    pub title: String,
+    pub year: u32,
+}
 
 #[derive(Debug, Clone)]
 pub struct RadarrClient {
     http: Client,
     base_url: Url,
     api_key: String,
-    cache: Arc<RwLock<HashMap<i64, String>>>,
+    cache: Arc<RwLock<HashMap<i64, RadarrMovie>>>,
     cache_path: PathBuf,
 }
 
@@ -45,8 +51,8 @@ impl RadarrClient {
         })
     }
 
-    pub async fn resolve_name(&self, tmdb_id: i64) -> Result<String, RadarrError> {
-        if let Some(existing) = self.cached_title(tmdb_id).await {
+    pub async fn resolve_name(&self, tmdb_id: i64) -> Result<RadarrMovie, RadarrError> {
+        if let Some(existing) = self.cached_movie(tmdb_id).await {
             debug!(tmdb_id, "using cached Radarr title");
             return Ok(existing);
         }
@@ -77,9 +83,19 @@ impl RadarrClient {
             return Err(RadarrError::NotFound { tmdb_id });
         };
 
-        self.store_title(tmdb_id, &title).await?;
+        let Some(year) = payload.year else {
+            debug!(tmdb_id, "skipping Radarr movie lookup due to missing year");
+            return Err(RadarrError::NotFound { tmdb_id });
+        };
 
-        Ok(title)
+        let movie = RadarrMovie {
+            title,
+            year,
+        };
+
+        self.store_movie(tmdb_id, &movie).await?;
+
+        Ok(movie)
     }
 
     pub async fn retain_titles(&self, keep: &HashSet<i64>) -> Result<(), RadarrError> {
@@ -105,15 +121,15 @@ impl RadarrClient {
         self.persist_cache().await
     }
 
-    async fn cached_title(&self, tmdb_id: i64) -> Option<String> {
+    async fn cached_movie(&self, tmdb_id: i64) -> Option<RadarrMovie> {
         let guard = self.cache.read().await;
         guard.get(&tmdb_id).cloned()
     }
 
-    async fn store_title(&self, tmdb_id: i64, title: &str) -> Result<(), RadarrError> {
+    async fn store_movie(&self, tmdb_id: i64, movie: &RadarrMovie) -> Result<(), RadarrError> {
         {
             let mut guard = self.cache.write().await;
-            guard.insert(tmdb_id, title.to_string());
+            guard.insert(tmdb_id, movie.clone());
         }
         self.persist_cache().await
     }
@@ -150,9 +166,11 @@ impl RadarrClient {
 struct MovieLookupEntry {
     #[serde(default)]
     title: Option<String>,
+    #[serde(default)]
+    year: Option<u32>,
 }
 
-fn load_cache(path: &Path) -> Result<HashMap<i64, String>, RadarrError> {
+fn load_cache(path: &Path) -> Result<HashMap<i64, RadarrMovie>, RadarrError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| RadarrError::CacheDir {
             source,
@@ -175,7 +193,7 @@ fn load_cache(path: &Path) -> Result<HashMap<i64, String>, RadarrError> {
         return Ok(HashMap::new());
     }
 
-    let data: HashMap<i64, String> =
+    let data: HashMap<i64, RadarrMovie> =
         serde_json::from_slice(&bytes).map_err(|source| RadarrError::CacheParse {
             source,
             path: path.to_path_buf(),

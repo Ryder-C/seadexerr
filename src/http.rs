@@ -341,7 +341,7 @@ async fn respond_generic_search(
                             items.push(build_torznab_item(torrent, title, movie_category_ids()));
                         }
                         None => {
-                            let fallback = format_movie_feed_title(&media.title);
+                            let fallback = default_torrent_title(&torrent.id);
                             items.push(build_torznab_item(torrent, fallback, movie_category_ids()));
                         }
                     }
@@ -661,7 +661,7 @@ async fn respond_movie_search(
         .unwrap() // We can be sure Radarr is enabled here
         .resolve_name(tmdb_id)
         .await
-        .map(|title| format_movie_feed_title(&title))
+        .map(|movie| format_movie_feed_title(&movie.title, movie.year))
         .map_err(HttpError::Radarr)?;
     let items: Vec<TorznabItem> = collected
         .into_iter()
@@ -697,8 +697,12 @@ async fn resolve_feed_title(
     Ok(format!("{series_title} S{season:02} Bluray 1080p remux"))
 }
 
-fn format_movie_feed_title(title: &str) -> String {
-    format!("{title} Bluray 1080p remux")
+fn format_movie_feed_title(title: &str, year: u32) -> String {
+    if year == 0 {
+        format!("{title} Bluray 1080p remux")
+    } else {
+        format!("{title} ({year}) Bluray 1080p remux")
+    }
 }
 
 fn build_channel_metadata(state: &AppState) -> Result<ChannelMetadata, HttpError> {
@@ -776,11 +780,13 @@ async fn resolve_movie_generic_title(
         .as_ref()
         .ok_or_else(|| HttpError::UnsupportedOperation("Radarr is disabled".to_string()))?;
 
-    let title = radarr
-        .resolve_name(tmdb_id)
-        .await
-        .map_err(HttpError::Radarr)?;
-    let formatted = format_movie_feed_title(&title);
+    let movie = match radarr.resolve_name(tmdb_id).await {
+        Ok(movie) => movie,
+        Err(RadarrError::NotFound { .. }) => return Ok(None),
+        Err(err) => return Err(HttpError::Radarr(err)),
+    };
+
+    let formatted = format_movie_feed_title(&movie.title, movie.year);
     cache.insert(tmdb_id, formatted.clone());
     active_tmdb_ids.insert(tmdb_id);
     Ok(Some(formatted))
