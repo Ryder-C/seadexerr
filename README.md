@@ -15,6 +15,8 @@ services:
     environment:
       - SONARR_BASE_URL=http://localhost:8989/
       - SONARR_API_KEY=<your api key here>
+      - RADARR_BASE_URL=http://localhost:7878/
+      - RADARR_API_KEY=<your api key here>
 ```
 
 <details>
@@ -26,6 +28,9 @@ Most can be left as default
 | `SONARR_API_KEY`                 | **(required)**                                                                                   | Sonarr API key used to resolve series titles for feed names.                      |
 | `SONARR_BASE_URL`                | `http://localhost:8989/`                                                                         | Base URL for your Sonarr instance.                                                |
 | `SONARR_TIMEOUT_SECS`            | `SEADEXER_RELEASES_TIMEOUT_SECS` (10)                                                            | Timeout (seconds) for Sonarr API requests.                                        |
+| `RADARR_API_KEY`                 | **(required)**                                                                                   | Radarr API key used to resolve movie titles.                                      |
+| `RADARR_BASE_URL`                | `http://localhost:7878/`                                                                         | Base URL for your Radarr instance.                                                |
+| `RADARR_TIMEOUT_SECS`            | `SEADEXER_RELEASES_TIMEOUT_SECS` (10)                                                            | Timeout (seconds) for Radarr API requests.                                        |
 | `SEADEXER_ANILIST_BASE_URL`      | `https://graphql.anilist.co`                                                                     | GraphQL endpoint used to resolve AniList titles and formats.                      |
 | `SEADEXER_ANILIST_TIMEOUT_SECS`  | `SEADEXER_RELEASES_TIMEOUT_SECS` (10)                                                            | Timeout (seconds) for AniList GraphQL requests.                                   |
 | `SEADEXER_HOST`                  | `0.0.0.0`                                                                                        | Interface the HTTP server listens on.                                             |
@@ -65,7 +70,7 @@ In Sonarr:
 
 ## Future Plans
 
-- [ ] Movie Support
+- [x] Movie Support (TMDB + Radarr)
 - [ ] Specials Support
 - [ ] Episode Support
 - [x] RSS Refresh

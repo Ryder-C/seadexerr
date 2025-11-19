@@ -2,6 +2,7 @@ mod anilist;
 mod config;
 mod http;
 mod mapping;
+mod radarr;
 mod releases;
 mod sonarr;
 mod torznab;
@@ -15,6 +16,7 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 use crate::anilist::AniListClient;
 use crate::config::AppConfig;
 use crate::mapping::PlexAniBridgeMappings;
+use crate::radarr::RadarrClient;
 use crate::releases::ReleasesClient;
 use crate::sonarr::SonarrClient;
 
@@ -23,6 +25,7 @@ pub struct AppState {
     pub config: AppConfig,
     pub anilist: AniListClient,
     pub sonarr: SonarrClient,
+    pub radarr: RadarrClient,
     pub releases: ReleasesClient,
     pub mappings: PlexAniBridgeMappings,
 }
@@ -54,6 +57,15 @@ async fn main() -> anyhow::Result<()> {
     )
     .context("failed to construct Sonarr client")?;
 
+    let radarr_cache_path = config.data_path.join("radarr_titles.json");
+    let radarr = RadarrClient::new(
+        config.radarr_url.clone(),
+        config.radarr_api_key.clone(),
+        config.radarr_timeout,
+        radarr_cache_path,
+    )
+    .context("failed to construct Radarr client")?;
+
     let mappings = PlexAniBridgeMappings::bootstrap(
         config.data_path.clone(),
         config.mapping_source_url.clone(),
@@ -67,6 +79,7 @@ async fn main() -> anyhow::Result<()> {
         config,
         anilist,
         sonarr,
+        radarr,
         releases,
         mappings,
     });

@@ -21,6 +21,9 @@ pub struct AppConfig {
     pub sonarr_url: Url,
     pub sonarr_api_key: String,
     pub sonarr_timeout: Duration,
+    pub radarr_url: Url,
+    pub radarr_api_key: String,
+    pub radarr_timeout: Duration,
 }
 
 impl AppConfig {
@@ -106,6 +109,19 @@ impl AppConfig {
             .unwrap_or(timeout_secs);
         let sonarr_timeout = Duration::from_secs(sonarr_timeout_secs.max(1));
 
+        let raw_radarr_url =
+            env::var("RADARR_BASE_URL").unwrap_or_else(|_| "http://localhost:7878".to_string());
+        let radarr_url = parse_root_url(&raw_radarr_url, "RADARR_BASE_URL")?;
+
+        let radarr_api_key =
+            env::var("RADARR_API_KEY").context("Missing RADARR_API_KEY variable")?;
+
+        let radarr_timeout_secs = env::var("RADARR_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(timeout_secs);
+        let radarr_timeout = Duration::from_secs(radarr_timeout_secs.max(1));
+
         Ok(Self {
             listen_addr,
             public_base_url,
@@ -123,6 +139,9 @@ impl AppConfig {
             sonarr_url,
             sonarr_api_key,
             sonarr_timeout,
+            radarr_url,
+            radarr_api_key,
+            radarr_timeout,
         })
     }
 }

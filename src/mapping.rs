@@ -48,6 +48,8 @@ struct ReverseMappingEntry {
 struct MappingIndex {
     tvdb_to_entries: HashMap<i64, Vec<MappingEntry>>,
     anilist_to_entries: HashMap<i64, Vec<ReverseMappingEntry>>,
+    tmdb_to_anilist: HashMap<i64, i64>,
+    anilist_to_tmdb: HashMap<i64, i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -61,7 +63,25 @@ struct RawMappingRecord {
     #[serde(default)]
     tvdb_id: Option<i64>,
     #[serde(default)]
+    tmdb_movie_id: Option<TmdbMovieId>,
+    #[serde(default)]
     tvdb_mappings: HashMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum TmdbMovieId {
+    Single(i64),
+    Multiple(Vec<i64>),
+}
+
+impl TmdbMovieId {
+    fn into_first(self) -> Option<i64> {
+        match self {
+            TmdbMovieId::Single(id) => Some(id),
+            TmdbMovieId::Multiple(ids) => ids.into_iter().next(),
+        }
+    }
 }
 
 impl PlexAniBridgeMappings {
@@ -400,12 +420,10 @@ impl PlexAniBridgeMappings {
     fn build_index(raw: HashMap<String, RawMappingRecord>) -> MappingIndex {
         let mut tvdb_index: HashMap<i64, Vec<MappingEntry>> = HashMap::new();
         let mut anilist_index: HashMap<i64, Vec<ReverseMappingEntry>> = HashMap::new();
+        let mut tmdb_index: HashMap<i64, i64> = HashMap::new();
+        let mut anilist_tmdb: HashMap<i64, i64> = HashMap::new();
 
         for (anilist_id_str, record) in raw {
-            let Some(tvdb_id) = record.tvdb_id else {
-                continue;
-            };
-
             let Ok(anilist_id) = anilist_id_str.parse::<i64>() else {
                 debug!(
                     anilist_id = %anilist_id_str,
@@ -414,25 +432,39 @@ impl PlexAniBridgeMappings {
                 continue;
             };
 
-            if record.tvdb_mappings.is_empty() {
-                trace!(anilist_id, tvdb_id, "skipping mapping with no season data");
-                continue;
+            let RawMappingRecord {
+                tvdb_id,
+                tmdb_movie_id,
+                tvdb_mappings,
+            } = record;
+
+            if let Some(tvdb_id) = tvdb_id {
+                if tvdb_mappings.is_empty() {
+                    trace!(anilist_id, tvdb_id, "skipping mapping with no season data");
+                } else {
+                    let seasons = tvdb_mappings.into_keys().collect::<Vec<_>>();
+                    tvdb_index.entry(tvdb_id).or_default().push(MappingEntry {
+                        anilist_id,
+                        seasons: seasons.clone(),
+                    });
+                    anilist_index
+                        .entry(anilist_id)
+                        .or_default()
+                        .push(ReverseMappingEntry { tvdb_id, seasons });
+                }
             }
 
-            let seasons = record.tvdb_mappings.into_keys().collect::<Vec<_>>();
-            tvdb_index.entry(tvdb_id).or_default().push(MappingEntry {
-                anilist_id,
-                seasons: seasons.clone(),
-            });
-            anilist_index
-                .entry(anilist_id)
-                .or_default()
-                .push(ReverseMappingEntry { tvdb_id, seasons });
+            if let Some(tmdb_id) = tmdb_movie_id.and_then(|value| value.into_first()) {
+                tmdb_index.insert(tmdb_id, anilist_id);
+                anilist_tmdb.insert(anilist_id, tmdb_id);
+            }
         }
 
         MappingIndex {
             tvdb_to_entries: tvdb_index,
             anilist_to_entries: anilist_index,
+            tmdb_to_anilist: tmdb_index,
+            anilist_to_tmdb: anilist_tmdb,
         }
     }
 
@@ -475,6 +507,68 @@ impl PlexAniBridgeMappings {
         Ok(None)
     }
 
+    pub async fn resolve_anilist_id_for_tvdb(
+        &self,
+        tvdb_id: i64,
+    ) -> Result<Option<i64>, MappingError> {
+        let mappings = self.load_mappings().await?;
+        let Some(entries) = mappings.tvdb_to_entries.get(&tvdb_id) else {
+            debug!(tvdb_id, "no entries found for tvdb id");
+            return Ok(None);
+        };
+
+        let mut best: Option<(i64, u32)> = None;
+        for entry in entries {
+            let mut seasons: Vec<u32> = entry
+                .seasons
+                .iter()
+                .filter_map(|key| parse_season_key(key))
+                .collect();
+
+            let season = if seasons.is_empty() {
+                u32::MAX
+            } else {
+                seasons.sort_unstable();
+                seasons[0]
+            };
+
+            match best {
+                Some((_, best_season)) if season >= best_season => {}
+                _ => best = Some((entry.anilist_id, season)),
+            }
+        }
+
+        if let Some((anilist_id, season)) = best {
+            debug!(
+                tvdb_id,
+                anilist_id, season, "selected mapping for tv search"
+            );
+            return Ok(Some(anilist_id));
+        }
+
+        debug!(tvdb_id, "failed to select mapping for movie search");
+        Ok(None)
+    }
+
+    pub async fn resolve_anilist_id_for_tmdb(
+        &self,
+        tmdb_id: i64,
+    ) -> Result<Option<i64>, MappingError> {
+        let mappings = self.load_mappings().await?;
+        if let Some(anilist_id) = mappings.tmdb_to_anilist.get(&tmdb_id) {
+            debug!(tmdb_id, anilist_id, "resolved tmdb mapping");
+            Ok(Some(*anilist_id))
+        } else {
+            debug!(tmdb_id, "no tmdb mapping found");
+            Ok(None)
+        }
+    }
+
+    pub async fn resolve_tmdb_id(&self, anilist_id: i64) -> Result<Option<i64>, MappingError> {
+        let mappings = self.load_mappings().await?;
+        Ok(mappings.anilist_to_tmdb.get(&anilist_id).copied())
+    }
+
     pub async fn resolve_tvdb_mappings(
         &self,
         anilist_id: i64,
@@ -497,6 +591,22 @@ impl PlexAniBridgeMappings {
 
         Ok(result)
     }
+}
+
+pub(crate) fn parse_season_key(key: &str) -> Option<u32> {
+    if !key.starts_with('s') {
+        return None;
+    }
+
+    let digits: String = key[1..]
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect();
+    if digits.is_empty() {
+        return None;
+    }
+
+    digits.parse().ok()
 }
 
 #[derive(Debug, Error)]
