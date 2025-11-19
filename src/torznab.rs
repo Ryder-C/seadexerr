@@ -63,6 +63,8 @@ pub fn default_categories() -> Vec<TorznabCategory> {
 pub enum TorznabBuildError {
     #[error("failed to build XML document")]
     Xml(#[from] quick_xml::Error),
+    #[error("failed to write XML document")]
+    Io(#[from] std::io::Error),
     #[error("failed to format XML document as UTF-8")]
     Utf8(#[from] std::string::FromUtf8Error),
     #[error("failed to format timestamp in RFC2822 format")]
