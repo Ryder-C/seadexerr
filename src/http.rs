@@ -316,30 +316,34 @@ async fn respond_generic_search(
 
         match &media.format {
             format if format_allowed(format) => {
-                let title = resolve_tv_generic_title(
-                    state,
-                    &torrent,
-                    &mut tv_title_cache,
-                    &mut active_tvdb_ids,
-                )
-                .await?;
-                items.push(build_torznab_item(torrent, title, tv_category_ids()));
+                if state.sonarr.is_some() {
+                    let title = resolve_tv_generic_title(
+                        state,
+                        &torrent,
+                        &mut tv_title_cache,
+                        &mut active_tvdb_ids,
+                    )
+                    .await?;
+                    items.push(build_torznab_item(torrent, title, tv_category_ids()));
+                }
             }
             MediaFormat::Movie => {
-                match resolve_movie_generic_title(
-                    state,
-                    anilist_id,
-                    &mut movie_title_cache,
-                    &mut active_tmdb_ids,
-                )
-                .await?
-                {
-                    Some(title) => {
-                        items.push(build_torznab_item(torrent, title, movie_category_ids()));
-                    }
-                    None => {
-                        let fallback = format_movie_feed_title(&media.title);
-                        items.push(build_torznab_item(torrent, fallback, movie_category_ids()));
+                if state.radarr.is_some() {
+                    match resolve_movie_generic_title(
+                        state,
+                        anilist_id,
+                        &mut movie_title_cache,
+                        &mut active_tmdb_ids,
+                    )
+                    .await?
+                    {
+                        Some(title) => {
+                            items.push(build_torznab_item(torrent, title, movie_category_ids()));
+                        }
+                        None => {
+                            let fallback = format_movie_feed_title(&media.title);
+                            items.push(build_torznab_item(torrent, fallback, movie_category_ids()));
+                        }
                     }
                 }
             }
@@ -355,17 +359,19 @@ async fn respond_generic_search(
 
     let xml = torznab::render_feed(&metadata, &items, offset, total)?;
 
-    state
-        .sonarr
-        .retain_titles(&active_tvdb_ids)
-        .await
-        .map_err(HttpError::Sonarr)?;
+    if let Some(sonarr) = &state.sonarr {
+        sonarr
+            .retain_titles(&active_tvdb_ids)
+            .await
+            .map_err(HttpError::Sonarr)?;
+    }
 
-    state
-        .radarr
-        .retain_titles(&active_tmdb_ids)
-        .await
-        .map_err(HttpError::Radarr)?;
+    if let Some(radarr) = &state.radarr {
+        radarr
+            .retain_titles(&active_tmdb_ids)
+            .await
+            .map_err(HttpError::Radarr)?;
+    }
 
     Ok((
         [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
@@ -383,6 +389,16 @@ async fn respond_tv_search(state: &AppState, query: &TorznabQuery) -> Result<Res
         .min(state.config.default_limit);
 
     let offset = query.offset.unwrap_or(0);
+
+    if state.sonarr.is_none() {
+        debug!("tvsearch requested but sonarr is disabled; returning empty feed");
+        let xml = torznab::render_feed(&metadata, &[], offset, 0)?;
+        return Ok((
+            [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+            xml,
+        )
+            .into_response());
+    }
 
     let tvdb_id = match query.tvdb_identifier() {
         Some(id) => id,
@@ -534,6 +550,16 @@ async fn respond_movie_search(
 
     let offset = query.offset.unwrap_or(0);
 
+    if state.radarr.is_none() {
+        debug!("movie-search requested but radarr is disabled; returning empty feed");
+        let xml = torznab::render_feed(&metadata, &[], offset, 0)?;
+        return Ok((
+            [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+            xml,
+        )
+            .into_response());
+    }
+
     let tmdb_id = match query.tmdb_identifier() {
         Some(id) => id,
         None => {
@@ -631,6 +657,8 @@ async fn respond_movie_search(
     let total = collected.len();
     let feed_title = state
         .radarr
+        .as_ref()
+        .unwrap() // We can be sure Radarr is enabled here
         .resolve_name(tmdb_id)
         .await
         .map(|title| format_movie_feed_title(&title))
@@ -657,8 +685,11 @@ async fn resolve_feed_title(
     season: u32,
 ) -> Result<String, HttpError> {
     debug!(tvdb_id, season, "resolving title from sonarr");
-    let series_title = state
+    let sonarr = state
         .sonarr
+        .as_ref()
+        .ok_or_else(|| HttpError::UnsupportedOperation("Sonarr is disabled".to_string()))?;
+    let series_title = sonarr
         .resolve_name(tvdb_id)
         .await
         .map_err(HttpError::Sonarr)?;
@@ -740,8 +771,12 @@ async fn resolve_movie_generic_title(
         return Ok(Some(existing.clone()));
     }
 
-    let title = state
+    let radarr = state
         .radarr
+        .as_ref()
+        .ok_or_else(|| HttpError::UnsupportedOperation("Radarr is disabled".to_string()))?;
+
+    let title = radarr
         .resolve_name(tmdb_id)
         .await
         .map_err(HttpError::Radarr)?;
