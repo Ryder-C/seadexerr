@@ -9,7 +9,8 @@ use std::{
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::{fs as async_fs, sync::RwLock};
+use tokio::sync::RwLock;
+use tokio::task;
 use tracing::debug;
 use url::Url;
 
@@ -135,28 +136,37 @@ impl RadarrClient {
     }
 
     async fn persist_cache(&self) -> Result<(), RadarrError> {
+        // Clone snapshot while holding the lock then offload CPU + IO to blocking thread.
         let snapshot = {
             let guard = self.cache.read().await;
             guard.clone()
         };
 
-        let json = serde_json::to_vec_pretty(&snapshot).map_err(RadarrError::CacheSerialise)?;
+        let path = self.cache_path.clone();
 
-        if let Some(parent) = self.cache_path.parent() {
-            async_fs::create_dir_all(parent)
-                .await
-                .map_err(|source| RadarrError::CacheDir {
-                    source,
-                    path: parent.to_path_buf(),
-                })?;
-        }
+        let result = task::spawn_blocking(move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            let json = serde_json::to_vec_pretty(&snapshot)?;
 
-        async_fs::write(&self.cache_path, json)
-            .await
-            .map_err(|source| RadarrError::CacheWrite {
-                source,
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+
+            std::fs::write(&path, json)?;
+
+            Ok(())
+        })
+        .await
+        .map_err(|source| RadarrError::CacheWrite {
+            source: std::io::Error::new(std::io::ErrorKind::Other, format!("join error: {source}")),
+            path: self.cache_path.clone(),
+        })?;
+
+        if let Err(_err) = result {
+            return Err(RadarrError::CacheWrite {
+                source: std::io::Error::new(std::io::ErrorKind::Other, "failed to persist cache"),
                 path: self.cache_path.clone(),
-            })?;
+            });
+        }
 
         Ok(())
     }

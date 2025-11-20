@@ -58,7 +58,7 @@ In Prowlarr:
 4. Set **Url** to `http://seadexerr:6767`
 5. Click **Test** and **Save**
 
-In Sonarr:
+In Sonarr or Radarr:
 
 1. Go to **Settings → Custom Formats**
 2. Create a new **Custom Format** named `Seadex`
@@ -70,9 +70,9 @@ In Sonarr:
 
 ## Future Plans
 
-- [x] Movie Support (TMDB + Radarr)
 - [ ] Specials Support
 - [ ] Episode Support
+- [x] Movie Support (TMDB + Radarr)
 - [x] RSS Refresh
 - [x] Local PlexAniBridge Mappings
 

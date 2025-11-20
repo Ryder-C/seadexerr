@@ -12,6 +12,7 @@ use reqwest::{
 use serde::Deserialize;
 use thiserror::Error;
 use tokio::fs;
+use tokio::task;
 use tokio::sync::RwLock;
 use tracing::{debug, trace, warn};
 use url::Url;
@@ -226,8 +227,16 @@ impl PlexAniBridgeMappings {
             })?
             .to_vec();
 
-        let raw: HashMap<String, RawMappingRecord> = serde_json::from_slice(&bytes)?;
-        let index = Self::build_index(raw);
+        // Offload heavy JSON deserialisation and index build to a blocking thread so the
+        // async runtime worker threads aren't stalled by CPU work.
+        let index = {
+            let bytes = bytes.clone();
+            task::spawn_blocking(move || {
+                let raw: HashMap<String, RawMappingRecord> = serde_json::from_slice(&bytes)?;
+                Ok::<MappingIndex, MappingError>(Self::build_index(raw))
+            })
+            .await??
+        };
         let series = index.tvdb_to_entries.len();
         let entries = index
             .tvdb_to_entries
@@ -382,8 +391,11 @@ impl PlexAniBridgeMappings {
                 path: self.path.clone(),
             })?;
 
-        let raw: HashMap<String, RawMappingRecord> = serde_json::from_slice(&contents)?;
-        let index = Self::build_index(raw);
+        let index = task::spawn_blocking(move || {
+            let raw: HashMap<String, RawMappingRecord> = serde_json::from_slice(&contents)?;
+            Ok::<MappingIndex, MappingError>(Self::build_index(raw))
+        })
+        .await??;
         let series = index.tvdb_to_entries.len();
         let entries = index
             .tvdb_to_entries
@@ -643,4 +655,6 @@ pub enum MappingError {
     },
     #[error("failed to deserialise plexanibridge mapping file")]
     Deserialisation(#[from] serde_json::Error),
+    #[error("background task failed")]
+    TaskJoin(#[from] tokio::task::JoinError),
 }

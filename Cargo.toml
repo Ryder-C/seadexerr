@@ -17,3 +17,8 @@ tokio = { version = "1.48.0", features = ["fs", "macros", "rt-multi-thread", "sy
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["fmt", "env-filter"] }
 url = "2.5.7"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
