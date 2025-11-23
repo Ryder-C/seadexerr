@@ -1,4 +1,7 @@
-use std::{borrow::Cow, collections::{HashMap, HashSet}};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+};
 
 use axum::{
     Json, Router,
@@ -14,11 +17,12 @@ use tracing::{debug, info};
 use url::Url;
 
 use crate::anilist::{AniListError, MediaFormat};
+use crate::radarr::RadarrError;
 use crate::releases::{ReleasesError, Torrent};
 use crate::torznab::{self, ChannelMetadata, TorznabItem};
 use crate::{
     AppState, SharedAppState,
-    mapping::{MappingError, TvdbMapping},
+    mapping::{MappingError, TvdbMapping, parse_season_key},
     sonarr::SonarrError,
 };
 
@@ -46,6 +50,8 @@ struct TorznabQuery {
     season: Option<String>,
     #[serde(rename = "tvdbid")]
     tvdb_id: Option<String>,
+    #[serde(rename = "tmdbid")]
+    tmdb_id: Option<String>,
     #[serde(rename = "q")]
     query: Option<String>,
 }
@@ -56,12 +62,19 @@ impl TorznabQuery {
             "caps" => TorznabOperation::Caps,
             "search" => TorznabOperation::Search,
             "tvsearch" | "tv-search" => TorznabOperation::TvSearch,
+            "movie" | "movie-search" | "moviesearch" => TorznabOperation::MovieSearch,
             other => TorznabOperation::Unsupported(other),
         }
     }
 
     fn tvdb_identifier(&self) -> Option<i64> {
         self.tvdb_id
+            .as_deref()
+            .and_then(|value| value.trim().parse::<i64>().ok())
+    }
+
+    fn tmdb_identifier(&self) -> Option<i64> {
+        self.tmdb_id
             .as_deref()
             .and_then(|value| value.trim().parse::<i64>().ok())
     }
@@ -77,6 +90,7 @@ enum TorznabOperation<'a> {
     Caps,
     Search,
     TvSearch,
+    MovieSearch,
     Unsupported(&'a str),
 }
 
@@ -85,6 +99,10 @@ fn format_allowed(format: &MediaFormat) -> bool {
         format,
         MediaFormat::Tv | MediaFormat::TvShort | MediaFormat::Ona
     )
+}
+
+fn movie_format_allowed(format: &MediaFormat) -> bool {
+    matches!(format, MediaFormat::Movie)
 }
 
 async fn torznab_handler(
@@ -96,12 +114,14 @@ async fn torznab_handler(
         TorznabOperation::Caps => "caps",
         TorznabOperation::Search => "search",
         TorznabOperation::TvSearch => "tvsearch",
+        TorznabOperation::MovieSearch => "movie-search",
         TorznabOperation::Unsupported(name) => name,
     };
 
     info!(
         operation = operation_name,
         tvdb = query.tvdb_id.as_deref(),
+        tmdb = query.tmdb_id.as_deref(),
         season = query.season.as_deref(),
         limit = query.limit,
         "torznab request received"
@@ -111,6 +131,7 @@ async fn torznab_handler(
         TorznabOperation::Caps => respond_caps(&state),
         TorznabOperation::Search => respond_generic_search(&state, &query).await,
         TorznabOperation::TvSearch => respond_tv_search(&state, &query).await,
+        TorznabOperation::MovieSearch => respond_movie_search(&state, &query).await,
         TorznabOperation::Unsupported(name) => {
             Err(HttpError::UnsupportedOperation(name.to_string()))
         }
@@ -184,23 +205,14 @@ async fn respond_generic_search(
     );
 
     let fetch_limit = state.config.default_limit;
-    let torrents = state
+    let mut torrents = state
         .releases
         .recent_public_torrents(fetch_limit)
         .await
         .map_err(HttpError::Releases)?;
 
-    let season_packs: Vec<Torrent> = torrents
-        .into_iter()
-        .filter(|torrent| torrent.files.len() > 1)
-        .collect();
-
-    let total = season_packs.len();
-
-    let window: Vec<Torrent> = season_packs.into_iter().skip(offset).take(limit).collect();
-
-    if window.is_empty() {
-        let xml = torznab::render_feed(&metadata, &[], offset, total)?;
+    if torrents.is_empty() {
+        let xml = torznab::render_feed(&metadata, &[], offset, 0)?;
         return Ok((
             [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
             xml,
@@ -208,7 +220,7 @@ async fn respond_generic_search(
             .into_response());
     }
 
-    let missing_ids: Vec<String> = window
+    let missing_ids: Vec<String> = torrents
         .iter()
         .filter(|torrent| torrent.anilist_id.is_none())
         .map(|torrent| torrent.id.clone())
@@ -224,7 +236,7 @@ async fn respond_generic_search(
             .map_err(HttpError::Releases)?
     };
 
-    let window: Vec<Torrent> = window
+    torrents = torrents
         .into_iter()
         .map(|mut torrent| {
             if torrent.anilist_id.is_none()
@@ -236,7 +248,7 @@ async fn respond_generic_search(
         })
         .collect();
 
-    let anilist_ids: Vec<i64> = window
+    let anilist_ids: Vec<i64> = torrents
         .iter()
         .filter_map(|torrent| torrent.anilist_id)
         .collect();
@@ -247,8 +259,45 @@ async fn respond_generic_search(
         .await
         .map_err(HttpError::AniList)?;
 
-    let mut title_cache: HashMap<(i64, u32), String> = HashMap::new();
+    let mut eligible: Vec<Torrent> = Vec::new();
+
+    for torrent in torrents.into_iter() {
+        let Some(anilist_id) = torrent.anilist_id else {
+            continue;
+        };
+
+        let Some(media) = media_lookup.get(&anilist_id) else {
+            continue;
+        };
+
+        let include = match &media.format {
+            MediaFormat::Movie => true,
+            format if format_allowed(format) => torrent.files.len() > 1,
+            _ => false,
+        };
+
+        if include {
+            eligible.push(torrent);
+        }
+    }
+
+    let total = eligible.len();
+
+    let window: Vec<Torrent> = eligible.into_iter().skip(offset).take(limit).collect();
+
+    if window.is_empty() {
+        let xml = torznab::render_feed(&metadata, &[], offset, total)?;
+        return Ok((
+            [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+            xml,
+        )
+            .into_response());
+    }
+
+    let mut tv_title_cache: HashMap<(i64, u32), String> = HashMap::new();
+    let mut movie_title_cache: HashMap<i64, String> = HashMap::new();
     let mut active_tvdb_ids: HashSet<i64> = HashSet::new();
+    let mut active_tmdb_ids: HashSet<i64> = HashSet::new();
     let mut items = Vec::with_capacity(window.len());
 
     for torrent in window.into_iter() {
@@ -265,32 +314,64 @@ async fn respond_generic_search(
             continue;
         };
 
-        if !format_allowed(&media.format) {
-            debug!(
-                anilist_id,
-                format = ?media.format,
-                "skipping torrent due to unsupported AniList format"
-            );
-            continue;
+        match &media.format {
+            format if format_allowed(format) => {
+                if state.sonarr.is_some() {
+                    let title = resolve_tv_generic_title(
+                        state,
+                        &torrent,
+                        &mut tv_title_cache,
+                        &mut active_tvdb_ids,
+                    )
+                    .await?;
+                    items.push(build_torznab_item(torrent, title, tv_category_ids()));
+                }
+            }
+            MediaFormat::Movie => {
+                if state.radarr.is_some() {
+                    match resolve_movie_generic_title(
+                        state,
+                        anilist_id,
+                        &mut movie_title_cache,
+                        &mut active_tmdb_ids,
+                    )
+                    .await?
+                    {
+                        Some(title) => {
+                            items.push(build_torznab_item(torrent, title, movie_category_ids()));
+                        }
+                        None => {
+                            let fallback = default_torrent_title(&torrent.id);
+                            items.push(build_torznab_item(torrent, fallback, movie_category_ids()));
+                        }
+                    }
+                }
+            }
+            other => {
+                debug!(
+                    anilist_id,
+                    format = ?other,
+                    "skipping torrent due to unsupported AniList format"
+                );
+            }
         }
-
-        let title = resolve_generic_search_title(
-            state,
-            &torrent,
-            &mut title_cache,
-            &mut active_tvdb_ids,
-        )
-        .await?;
-        items.push(build_torznab_item(torrent, title));
     }
 
     let xml = torznab::render_feed(&metadata, &items, offset, total)?;
 
-    state
-        .sonarr
-        .retain_titles(&active_tvdb_ids)
-        .await
-        .map_err(HttpError::Sonarr)?;
+    if let Some(sonarr) = &state.sonarr {
+        sonarr
+            .retain_titles(&active_tvdb_ids)
+            .await
+            .map_err(HttpError::Sonarr)?;
+    }
+
+    if let Some(radarr) = &state.radarr {
+        radarr
+            .retain_titles(&active_tmdb_ids)
+            .await
+            .map_err(HttpError::Radarr)?;
+    }
 
     Ok((
         [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
@@ -308,6 +389,16 @@ async fn respond_tv_search(state: &AppState, query: &TorznabQuery) -> Result<Res
         .min(state.config.default_limit);
 
     let offset = query.offset.unwrap_or(0);
+
+    if state.sonarr.is_none() {
+        debug!("tvsearch requested but sonarr is disabled; returning empty feed");
+        let xml = torznab::render_feed(&metadata, &[], offset, 0)?;
+        return Ok((
+            [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+            xml,
+        )
+            .into_response());
+    }
 
     let tvdb_id = match query.tvdb_identifier() {
         Some(id) => id,
@@ -435,8 +526,150 @@ async fn respond_tv_search(state: &AppState, query: &TorznabQuery) -> Result<Res
         .filter(|item| item.files.len() > 1)
         .skip(offset)
         .take(limit)
-        .map(|torrent| build_torznab_item(torrent, feed_title.clone()))
+        .map(|torrent| build_torznab_item(torrent, feed_title.clone(), tv_category_ids()))
         .collect();
+    let xml = torznab::render_feed(&metadata, &items, offset, total)?;
+
+    Ok((
+        [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+        xml,
+    )
+        .into_response())
+}
+
+async fn respond_movie_search(
+    state: &AppState,
+    query: &TorznabQuery,
+) -> Result<Response, HttpError> {
+    let metadata = build_channel_metadata(state)?;
+    let limit = query
+        .limit
+        .unwrap_or(state.config.default_limit)
+        .max(1)
+        .min(state.config.default_limit);
+
+    let offset = query.offset.unwrap_or(0);
+
+    if state.radarr.is_none() {
+        debug!("movie-search requested but radarr is disabled; returning empty feed");
+        let xml = torznab::render_feed(&metadata, &[], offset, 0)?;
+        return Ok((
+            [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+            xml,
+        )
+            .into_response());
+    }
+
+    let tmdb_id = match query.tmdb_identifier() {
+        Some(id) => id,
+        None => {
+            debug!(
+                limit,
+                offset, "movie-search missing tmdbid; returning empty feed without error"
+            );
+            let xml = torznab::render_feed(&metadata, &[], offset, 0)?;
+            return Ok((
+                [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+                xml,
+            )
+                .into_response());
+        }
+    };
+
+    let anilist_id = match state
+        .mappings
+        .resolve_anilist_id_for_tmdb(tmdb_id)
+        .await
+        .map_err(HttpError::Mapping)?
+    {
+        Some(id) => id,
+        None => {
+            info!(
+                tmdb_id,
+                "no anilist mapping found for movie-search; returning empty result set"
+            );
+            let xml = torznab::render_feed(&metadata, &[], offset, 0)?;
+            return Ok((
+                [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+                xml,
+            )
+                .into_response());
+        }
+    };
+
+    debug!(
+        tmdb_id,
+        anilist_id, limit, "movie-search querying releases.moe"
+    );
+
+    let fetch_limit = offset.saturating_add(limit).min(state.config.default_limit);
+    let collected: Vec<Torrent> = match state
+        .releases
+        .search_torrents(anilist_id, fetch_limit)
+        .await
+    {
+        Ok(torrents) => torrents,
+        Err(err) => {
+            tracing::error!(
+                tmdb_id,
+                anilist_id,
+                error = %err,
+                "releases.moe lookup failed for movie-search"
+            );
+            return Err(HttpError::Releases(err));
+        }
+    };
+
+    let media_lookup = state
+        .anilist
+        .fetch_media(&[anilist_id])
+        .await
+        .map_err(HttpError::AniList)?;
+
+    let Some(media) = media_lookup.get(&anilist_id) else {
+        info!(
+            tmdb_id,
+            anilist_id, "AniList media missing for movie-search; returning empty result set"
+        );
+        let xml = torznab::render_feed(&metadata, &[], offset, 0)?;
+        return Ok((
+            [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+            xml,
+        )
+            .into_response());
+    };
+
+    if !movie_format_allowed(&media.format) {
+        info!(
+            tmdb_id,
+            anilist_id,
+            format = ?media.format,
+            "AniList format unsupported for movie-search"
+        );
+        let xml = torznab::render_feed(&metadata, &[], offset, 0)?;
+        return Ok((
+            [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+            xml,
+        )
+            .into_response());
+    }
+
+    let total = collected.len();
+    let feed_title = state
+        .radarr
+        .as_ref()
+        .unwrap() // We can be sure Radarr is enabled here
+        .resolve_name(tmdb_id)
+        .await
+        .map(|movie| format_movie_feed_title(&movie.title, movie.year))
+        .map_err(HttpError::Radarr)?;
+    let items: Vec<TorznabItem> = collected
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|torrent| build_torznab_item(torrent, feed_title.clone(), movie_category_ids()))
+        .collect();
+
     let xml = torznab::render_feed(&metadata, &items, offset, total)?;
 
     Ok((
@@ -452,13 +685,24 @@ async fn resolve_feed_title(
     season: u32,
 ) -> Result<String, HttpError> {
     debug!(tvdb_id, season, "resolving title from sonarr");
-    let series_title = state
+    let sonarr = state
         .sonarr
+        .as_ref()
+        .ok_or_else(|| HttpError::UnsupportedOperation("Sonarr is disabled".to_string()))?;
+    let series_title = sonarr
         .resolve_name(tvdb_id)
         .await
         .map_err(HttpError::Sonarr)?;
     debug!(tvdb_id, %series_title, "resolved series title from sonarr");
     Ok(format!("{series_title} S{season:02} Bluray 1080p remux"))
+}
+
+fn format_movie_feed_title(title: &str, year: u32) -> String {
+    if year == 0 {
+        format!("{title} Bluray 1080p remux")
+    } else {
+        format!("{title} ({year}) Bluray 1080p remux")
+    }
 }
 
 fn build_channel_metadata(state: &AppState) -> Result<ChannelMetadata, HttpError> {
@@ -476,7 +720,7 @@ fn build_channel_metadata(state: &AppState) -> Result<ChannelMetadata, HttpError
     })
 }
 
-async fn resolve_generic_search_title(
+async fn resolve_tv_generic_title(
     state: &AppState,
     torrent: &crate::releases::Torrent,
     cache: &mut HashMap<(i64, u32), String>,
@@ -511,6 +755,43 @@ async fn resolve_generic_search_title(
     Ok(default_torrent_title(&torrent.id))
 }
 
+async fn resolve_movie_generic_title(
+    state: &AppState,
+    anilist_id: i64,
+    cache: &mut HashMap<i64, String>,
+    active_tmdb_ids: &mut HashSet<i64>,
+) -> Result<Option<String>, HttpError> {
+    let Some(tmdb_id) = state
+        .mappings
+        .resolve_tmdb_id(anilist_id)
+        .await
+        .map_err(HttpError::Mapping)?
+    else {
+        return Ok(None);
+    };
+
+    if let Some(existing) = cache.get(&tmdb_id) {
+        active_tmdb_ids.insert(tmdb_id);
+        return Ok(Some(existing.clone()));
+    }
+
+    let radarr = state
+        .radarr
+        .as_ref()
+        .ok_or_else(|| HttpError::UnsupportedOperation("Radarr is disabled".to_string()))?;
+
+    let movie = match radarr.resolve_name(tmdb_id).await {
+        Ok(movie) => movie,
+        Err(RadarrError::NotFound { .. }) => return Ok(None),
+        Err(err) => return Err(HttpError::Radarr(err)),
+    };
+
+    let formatted = format_movie_feed_title(&movie.title, movie.year);
+    cache.insert(tmdb_id, formatted.clone());
+    active_tmdb_ids.insert(tmdb_id);
+    Ok(Some(formatted))
+}
+
 fn select_tvdb_and_season(mappings: &[TvdbMapping]) -> Option<(i64, u32)> {
     let mut best: Option<(i64, u32)> = None;
 
@@ -537,27 +818,27 @@ fn select_tvdb_and_season(mappings: &[TvdbMapping]) -> Option<(i64, u32)> {
     best
 }
 
-fn parse_season_key(key: &str) -> Option<u32> {
-    if !key.starts_with('s') {
-        return None;
-    }
-
-    let digits: String = key[1..]
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit())
-        .collect();
-    if digits.is_empty() {
-        return None;
-    }
-
-    digits.parse().ok()
-}
-
 fn default_torrent_title(id: &str) -> String {
     format!("Torrent {id}")
 }
 
-fn build_torznab_item(torrent: crate::releases::Torrent, title: String) -> TorznabItem {
+fn tv_category_ids() -> Vec<u32> {
+    let mut ids = vec![torznab::ANIME_CATEGORY.id];
+    if let Some(sub) = torznab::ANIME_CATEGORY.subcategories.first() {
+        ids.push(sub.id);
+    }
+    ids
+}
+
+fn movie_category_ids() -> Vec<u32> {
+    vec![torznab::MOVIE_CATEGORY.id]
+}
+
+fn build_torznab_item(
+    torrent: crate::releases::Torrent,
+    title: String,
+    categories: Vec<u32>,
+) -> TorznabItem {
     let crate::releases::Torrent {
         id,
         download_url,
@@ -587,6 +868,7 @@ fn build_torznab_item(torrent: crate::releases::Torrent, title: String) -> Torzn
         info_hash,
         seeders,
         leechers: 0,
+        categories,
     }
 }
 
@@ -596,6 +878,7 @@ fn category_filter_matches(cat_param: &Option<String>) -> bool {
         Some(value) => {
             let mut matches_supported = false;
             let mut any_values = false;
+            let categories = torznab::default_categories();
             for part in value.split(',') {
                 let trimmed = part.trim();
                 if trimmed.is_empty() {
@@ -605,14 +888,12 @@ fn category_filter_matches(cat_param: &Option<String>) -> bool {
                 if trimmed == "0" {
                     return true;
                 }
-                if let Ok(id) = trimmed.parse::<u32>()
-                    && (id == torznab::ANIME_CATEGORY.id
-                        || torznab::ANIME_CATEGORY
-                            .subcategories
-                            .iter()
-                            .any(|sub| sub.id == id))
-                {
-                    matches_supported = true;
+                if let Ok(id) = trimmed.parse::<u32>() {
+                    if categories.iter().any(|category| {
+                        category.id == id || category.subcategories.iter().any(|sub| sub.id == id)
+                    }) {
+                        matches_supported = true;
+                    }
                 }
             }
 
@@ -637,6 +918,8 @@ pub enum HttpError {
     AniList(#[from] AniListError),
     #[error(transparent)]
     Sonarr(#[from] SonarrError),
+    #[error(transparent)]
+    Radarr(#[from] RadarrError),
 }
 
 impl IntoResponse for HttpError {
@@ -674,6 +957,11 @@ impl IntoResponse for HttpError {
                 Cow::from("Failed to construct Sonarr request"),
             ),
             HttpError::Sonarr(_) => (StatusCode::BAD_GATEWAY, Cow::from("Failed to query Sonarr")),
+            HttpError::Radarr(RadarrError::Url(_)) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Cow::from("Failed to construct Radarr request"),
+            ),
+            HttpError::Radarr(_) => (StatusCode::BAD_GATEWAY, Cow::from("Failed to query Radarr")),
         };
 
         tracing::error!("torznab handler error: {self}");

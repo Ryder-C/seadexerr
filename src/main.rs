@@ -2,6 +2,7 @@ mod anilist;
 mod config;
 mod http;
 mod mapping;
+mod radarr;
 mod releases;
 mod sonarr;
 mod torznab;
@@ -15,6 +16,7 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 use crate::anilist::AniListClient;
 use crate::config::AppConfig;
 use crate::mapping::PlexAniBridgeMappings;
+use crate::radarr::RadarrClient;
 use crate::releases::ReleasesClient;
 use crate::sonarr::SonarrClient;
 
@@ -22,7 +24,8 @@ use crate::sonarr::SonarrClient;
 pub struct AppState {
     pub config: AppConfig,
     pub anilist: AniListClient,
-    pub sonarr: SonarrClient,
+    pub sonarr: Option<SonarrClient>,
+    pub radarr: Option<RadarrClient>,
     pub releases: ReleasesClient,
     pub mappings: PlexAniBridgeMappings,
 }
@@ -45,14 +48,35 @@ async fn main() -> anyhow::Result<()> {
     let anilist = AniListClient::new(config.anilist_base_url.clone(), config.anilist_timeout)
         .context("failed to construct AniList client")?;
 
-    let sonarr_cache_path = config.data_path.join("sonarr_titles.json");
-    let sonarr = SonarrClient::new(
-        config.sonarr_url.clone(),
-        config.sonarr_api_key.clone(),
-        config.sonarr_timeout,
-        sonarr_cache_path,
-    )
-    .context("failed to construct Sonarr client")?;
+    let sonarr = if let Some(sonarr_config) = &config.sonarr {
+        let sonarr_cache_path = config.data_path.join("sonarr_titles.json");
+        Some(
+            SonarrClient::new(
+                sonarr_config.url.clone(),
+                sonarr_config.api_key.clone(),
+                sonarr_config.timeout,
+                sonarr_cache_path,
+            )
+            .context("failed to construct Sonarr client")?,
+        )
+    } else {
+        None
+    };
+
+    let radarr = if let Some(radarr_config) = &config.radarr {
+        let radarr_cache_path = config.data_path.join("radarr_titles.json");
+        Some(
+            RadarrClient::new(
+                radarr_config.url.clone(),
+                radarr_config.api_key.clone(),
+                radarr_config.timeout,
+                radarr_cache_path,
+            )
+            .context("failed to construct Radarr client")?,
+        )
+    } else {
+        None
+    };
 
     let mappings = PlexAniBridgeMappings::bootstrap(
         config.data_path.clone(),
@@ -67,6 +91,7 @@ async fn main() -> anyhow::Result<()> {
         config,
         anilist,
         sonarr,
+        radarr,
         releases,
         mappings,
     });

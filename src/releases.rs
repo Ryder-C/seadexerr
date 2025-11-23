@@ -33,21 +33,14 @@ impl ReleasesClient {
         anilist_id: i64,
         limit: usize,
     ) -> Result<Vec<Torrent>, ReleasesError> {
-        let mut url = self
-            .base_url
-            .join("collections/entries/records")
-            .map_err(ReleasesError::Url)?;
-
-        {
-            let mut pairs = url.query_pairs_mut();
-            pairs.append_pair("expand", "trs");
-            pairs.append_pair("filter", &format!("(alID={anilist_id})&&incomplete=false"));
-            pairs.append_pair("page", "1");
-            pairs.append_pair("perPage", &limit.min(self.default_limit).to_string());
-        }
-
-        let response = self.http.get(url).send().await?.error_for_status()?;
-        let payload: EntriesResponse = response.json().await?;
+        let payload = self
+            .fetch_entries_with(limit, |params| {
+                params.push((
+                    "filter".to_string(),
+                    format!("(alID={anilist_id})&&incomplete=false"),
+                ));
+            })
+            .await?;
 
         debug!(
             anilist_id,
@@ -56,19 +49,8 @@ impl ReleasesClient {
             "releases.moe entries response received"
         );
 
-        let torrents: Vec<Torrent> = payload
-            .items
+        let torrents: Vec<Torrent> = Self::entries_to_torrents(payload.items)
             .into_iter()
-            .flat_map(|entry| {
-                let al_id = entry.al_id;
-                entry.expand.into_iter().flat_map(move |expand| {
-                    expand.trs.into_iter().map(move |record| (al_id, record))
-                })
-            })
-            .filter(|(_, record)| record.tracker == "Nyaa")
-            .filter(|(_, record)| !record.tags.contains(&"Incomplete".to_string()))
-            .filter(|(_, record)| rewritten_download_url(record).is_some())
-            .map(|(al_id, record)| Torrent::from_record(record, al_id))
             .take(limit)
             .collect();
 
@@ -85,6 +67,43 @@ impl ReleasesClient {
         &self,
         limit: usize,
     ) -> Result<Vec<Torrent>, ReleasesError> {
+        let payload = self
+            .fetch_entries_with(limit, |params| {
+                params.push(("sort".to_string(), "-updated".to_string()));
+                params.push(("filter".to_string(), "(incomplete=false)".to_string()));
+            })
+            .await?;
+
+        let torrents = Self::entries_to_torrents(payload.items);
+
+        debug!(
+            feed = "recent-public",
+            limit,
+            returned = torrents.len(),
+            "releases.moe entries response received"
+        );
+
+        Ok(torrents)
+    }
+
+    async fn fetch_entries_with<F>(
+        &self,
+        limit: usize,
+        configure: F,
+    ) -> Result<EntriesResponse, ReleasesError>
+    where
+        F: FnOnce(&mut Vec<(String, String)>),
+    {
+        let mut params = vec![
+            ("expand".to_string(), "trs".to_string()),
+            ("page".to_string(), "1".to_string()),
+            (
+                "perPage".to_string(),
+                limit.min(self.default_limit).to_string(),
+            ),
+        ];
+        configure(&mut params);
+
         let mut url = self
             .base_url
             .join("collections/entries/records")
@@ -92,18 +111,19 @@ impl ReleasesClient {
 
         {
             let mut pairs = url.query_pairs_mut();
-            pairs.append_pair("expand", "trs");
-            pairs.append_pair("sort", "-updated");
-            pairs.append_pair("filter", "(incomplete=false)");
-            pairs.append_pair("page", "1");
-            pairs.append_pair("perPage", &limit.min(self.default_limit).to_string());
+            for (key, value) in params {
+                pairs.append_pair(&key, &value);
+            }
         }
 
         let response = self.http.get(url).send().await?.error_for_status()?;
         let payload: EntriesResponse = response.json().await?;
 
-        let torrents: Vec<Torrent> = payload
-            .items
+        Ok(payload)
+    }
+
+    fn entries_to_torrents(entries: Vec<EntryRecord>) -> Vec<Torrent> {
+        entries
             .into_iter()
             .flat_map(|entry| {
                 let al_id = entry.al_id;
@@ -115,16 +135,7 @@ impl ReleasesClient {
             .filter(|(_, record)| !record.tags.contains(&"Incomplete".to_string()))
             .filter(|(_, record)| rewritten_download_url(record).is_some())
             .map(|(al_id, record)| Torrent::from_record(record, al_id))
-            .collect();
-
-        debug!(
-            feed = "recent-public",
-            limit,
-            returned = torrents.len(),
-            "releases.moe entries response received"
-        );
-
-        Ok(torrents)
+            .collect()
     }
 
     pub async fn resolve_anilist_ids_for_torrents(

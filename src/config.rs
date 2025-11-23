@@ -18,9 +18,22 @@ pub struct AppConfig {
     pub default_limit: usize,
     pub anilist_base_url: Url,
     pub anilist_timeout: Duration,
-    pub sonarr_url: Url,
-    pub sonarr_api_key: String,
-    pub sonarr_timeout: Duration,
+    pub sonarr: Option<SonarrConfig>,
+    pub radarr: Option<RadarrConfig>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SonarrConfig {
+    pub url: Url,
+    pub api_key: String,
+    pub timeout: Duration,
+}
+
+#[derive(Clone, Debug)]
+pub struct RadarrConfig {
+    pub url: Url,
+    pub api_key: String,
+    pub timeout: Duration,
 }
 
 impl AppConfig {
@@ -93,18 +106,63 @@ impl AppConfig {
             .unwrap_or(timeout_secs);
         let anilist_timeout = Duration::from_secs(anilist_timeout_secs.max(1));
 
-        let raw_sonarr_url =
-            env::var("SONARR_BASE_URL").unwrap_or_else(|_| "http://localhost:8989".to_string());
-        let sonarr_url = parse_root_url(&raw_sonarr_url, "SONARR_BASE_URL")?;
+        let sonarr_enabled = env::var("SEADEXER_SONARR_ENABLED")
+            .map(|v| v != "false")
+            .unwrap_or(true);
 
-        let sonarr_api_key =
-            env::var("SONARR_API_KEY").context("Missing SONARR_API_KEY variable")?;
+        let sonarr = if sonarr_enabled {
+            let raw_sonarr_url = env::var("SONARR_BASE_URL")
+                .unwrap_or_else(|_| "http://localhost:8989".to_string());
+            let sonarr_url = parse_root_url(&raw_sonarr_url, "SONARR_BASE_URL")?;
 
-        let sonarr_timeout_secs = env::var("SONARR_TIMEOUT_SECS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(timeout_secs);
-        let sonarr_timeout = Duration::from_secs(sonarr_timeout_secs.max(1));
+            let sonarr_api_key =
+                env::var("SONARR_API_KEY").context("Missing SONARR_API_KEY variable")?;
+
+            let sonarr_timeout_secs = env::var("SONARR_TIMEOUT_SECS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(timeout_secs);
+            let sonarr_timeout = Duration::from_secs(sonarr_timeout_secs.max(1));
+
+            Some(SonarrConfig {
+                url: sonarr_url,
+                api_key: sonarr_api_key,
+                timeout: sonarr_timeout,
+            })
+        } else {
+            None
+        };
+
+        let radarr_enabled = env::var("SEADEXER_RADARR_ENABLED")
+            .map(|v| v != "false")
+            .unwrap_or(true);
+
+        let radarr = if radarr_enabled {
+            let raw_radarr_url = env::var("RADARR_BASE_URL")
+                .unwrap_or_else(|_| "http://localhost:7878".to_string());
+            let radarr_url = parse_root_url(&raw_radarr_url, "RADARR_BASE_URL")?;
+
+            let radarr_api_key =
+                env::var("RADARR_API_KEY").context("Missing RADARR_API_KEY variable")?;
+
+            let radarr_timeout_secs = env::var("RADARR_TIMEOUT_SECS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(timeout_secs);
+            let radarr_timeout = Duration::from_secs(radarr_timeout_secs.max(1));
+
+            Some(RadarrConfig {
+                url: radarr_url,
+                api_key: radarr_api_key,
+                timeout: radarr_timeout,
+            })
+        } else {
+            None
+        };
+
+        if sonarr.is_none() && radarr.is_none() {
+            anyhow::bail!("At least one of Sonarr or Radarr must be enabled");
+        }
 
         Ok(Self {
             listen_addr,
@@ -120,9 +178,8 @@ impl AppConfig {
             default_limit,
             anilist_base_url,
             anilist_timeout,
-            sonarr_url,
-            sonarr_api_key,
-            sonarr_timeout,
+            sonarr,
+            radarr,
         })
     }
 }

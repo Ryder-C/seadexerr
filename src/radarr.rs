@@ -7,23 +7,29 @@ use std::{
 };
 
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tokio::task;
 use tracing::debug;
 use url::Url;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RadarrMovie {
+    pub title: String,
+    pub year: u32,
+}
+
 #[derive(Debug, Clone)]
-pub struct SonarrClient {
+pub struct RadarrClient {
     http: Client,
     base_url: Url,
     api_key: String,
-    cache: Arc<RwLock<HashMap<i64, String>>>,
+    cache: Arc<RwLock<HashMap<i64, RadarrMovie>>>,
     cache_path: PathBuf,
 }
 
-impl SonarrClient {
+impl RadarrClient {
     pub fn new(
         base_url: Url,
         api_key: String,
@@ -46,27 +52,23 @@ impl SonarrClient {
         })
     }
 
-    pub async fn resolve_name(&self, tvdb_id: i64) -> Result<String, SonarrError> {
-        if let Some(cached) = self.cached_title(tvdb_id).await {
-            debug!(tvdb_id, "using cached Sonarr title");
-            return Ok(cached);
+    pub async fn resolve_name(&self, tmdb_id: i64) -> Result<RadarrMovie, RadarrError> {
+        if let Some(existing) = self.cached_movie(tmdb_id).await {
+            debug!(tmdb_id, "using cached Radarr title");
+            return Ok(existing);
         }
 
         let mut url = self
             .base_url
-            .join("api/v3/series/lookup")
-            .map_err(SonarrError::Url)?;
+            .join("api/v3/movie/lookup/tmdb")
+            .map_err(RadarrError::Url)?;
 
         {
             let mut pairs = url.query_pairs_mut();
-            pairs.append_pair("term", &format!("tvdb:{tvdb_id}"));
+            pairs.append_pair("tmdbId", &tmdb_id.to_string());
         }
 
-        debug!(
-            tvdb_id,
-            url = %url,
-            "requesting Sonarr series lookup"
-        );
+        debug!(tmdb_id, url = %url, "requesting Radarr movie lookup");
 
         let response = self
             .http
@@ -76,24 +78,28 @@ impl SonarrClient {
             .await?
             .error_for_status()?;
 
-        let payload: Vec<SeriesLookupEntry> = response.json().await?;
+        let payload: MovieLookupEntry = response.json().await?;
 
-        debug!(
-            tvdb_id,
-            results = payload.len(),
-            "Sonarr series lookup response received"
-        );
-
-        let Some(title) = payload.into_iter().find_map(|entry| entry.title) else {
-            return Err(SonarrError::NotFound { tvdb_id });
+        let Some(title) = payload.title else {
+            return Err(RadarrError::NotFound { tmdb_id });
         };
 
-        self.store_title(tvdb_id, &title).await?;
+        let Some(year) = payload.year else {
+            debug!(tmdb_id, "skipping Radarr movie lookup due to missing year");
+            return Err(RadarrError::NotFound { tmdb_id });
+        };
 
-        Ok(title)
+        let movie = RadarrMovie {
+            title,
+            year,
+        };
+
+        self.store_movie(tmdb_id, &movie).await?;
+
+        Ok(movie)
     }
 
-    pub async fn retain_titles(&self, keep: &HashSet<i64>) -> Result<(), SonarrError> {
+    pub async fn retain_titles(&self, keep: &HashSet<i64>) -> Result<(), RadarrError> {
         if keep.is_empty() {
             let mut guard = self.cache.write().await;
             if guard.is_empty() {
@@ -106,7 +112,7 @@ impl SonarrClient {
 
         let mut guard = self.cache.write().await;
         let original_len = guard.len();
-        guard.retain(|tvdb_id, _| keep.contains(tvdb_id));
+        guard.retain(|tmdb_id, _| keep.contains(tmdb_id));
 
         if guard.len() == original_len {
             return Ok(());
@@ -116,22 +122,21 @@ impl SonarrClient {
         self.persist_cache().await
     }
 
-    async fn cached_title(&self, tvdb_id: i64) -> Option<String> {
+    async fn cached_movie(&self, tmdb_id: i64) -> Option<RadarrMovie> {
         let guard = self.cache.read().await;
-        guard.get(&tvdb_id).cloned()
+        guard.get(&tmdb_id).cloned()
     }
 
-    async fn store_title(&self, tvdb_id: i64, title: &str) -> Result<(), SonarrError> {
+    async fn store_movie(&self, tmdb_id: i64, movie: &RadarrMovie) -> Result<(), RadarrError> {
         {
             let mut guard = self.cache.write().await;
-            guard.insert(tvdb_id, title.to_string());
+            guard.insert(tmdb_id, movie.clone());
         }
         self.persist_cache().await
     }
 
-    async fn persist_cache(&self) -> Result<(), SonarrError> {
-        // Clone snapshot under the read lock, then offload serialization + write
-        // to a blocking thread to avoid blocking tokio worker threads.
+    async fn persist_cache(&self) -> Result<(), RadarrError> {
+        // Clone snapshot while holding the lock then offload CPU + IO to blocking thread.
         let snapshot = {
             let guard = self.cache.read().await;
             guard.clone()
@@ -151,15 +156,13 @@ impl SonarrClient {
             Ok(())
         })
         .await
-        .map_err(|source| SonarrError::CacheWrite {
+        .map_err(|source| RadarrError::CacheWrite {
             source: std::io::Error::new(std::io::ErrorKind::Other, format!("join error: {source}")),
             path: self.cache_path.clone(),
         })?;
 
         if let Err(_err) = result {
-            // For simplicity, map any persistence error to CacheWrite. We avoid trying to
-            // downcast boxed errors back to concrete types here.
-            return Err(SonarrError::CacheWrite {
+            return Err(RadarrError::CacheWrite {
                 source: std::io::Error::new(std::io::ErrorKind::Other, "failed to persist cache"),
                 path: self.cache_path.clone(),
             });
@@ -170,14 +173,16 @@ impl SonarrClient {
 }
 
 #[derive(Debug, Deserialize)]
-struct SeriesLookupEntry {
+struct MovieLookupEntry {
     #[serde(default)]
     title: Option<String>,
+    #[serde(default)]
+    year: Option<u32>,
 }
 
-fn load_cache(path: &Path) -> Result<HashMap<i64, String>, SonarrError> {
+fn load_cache(path: &Path) -> Result<HashMap<i64, RadarrMovie>, RadarrError> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| SonarrError::CacheDir {
+        std::fs::create_dir_all(parent).map_err(|source| RadarrError::CacheDir {
             source,
             path: parent.to_path_buf(),
         })?;
@@ -187,7 +192,7 @@ fn load_cache(path: &Path) -> Result<HashMap<i64, String>, SonarrError> {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == ErrorKind::NotFound => return Ok(HashMap::new()),
         Err(source) => {
-            return Err(SonarrError::CacheRead {
+            return Err(RadarrError::CacheRead {
                 source,
                 path: path.to_path_buf(),
             });
@@ -198,8 +203,8 @@ fn load_cache(path: &Path) -> Result<HashMap<i64, String>, SonarrError> {
         return Ok(HashMap::new());
     }
 
-    let data: HashMap<i64, String> =
-        serde_json::from_slice(&bytes).map_err(|source| SonarrError::CacheParse {
+    let data: HashMap<i64, RadarrMovie> =
+        serde_json::from_slice(&bytes).map_err(|source| RadarrError::CacheParse {
             source,
             path: path.to_path_buf(),
         })?;
@@ -208,32 +213,32 @@ fn load_cache(path: &Path) -> Result<HashMap<i64, String>, SonarrError> {
 }
 
 #[derive(Debug, Error)]
-pub enum SonarrError {
-    #[error("failed to build Sonarr request url")]
+pub enum RadarrError {
+    #[error("failed to build Radarr request url")]
     Url(#[from] url::ParseError),
-    #[error("http error when querying Sonarr api")]
+    #[error("http error when querying Radarr api")]
     Http(#[from] reqwest::Error),
-    #[error("no Sonarr series title found for tvdb {tvdb_id}")]
-    NotFound { tvdb_id: i64 },
-    #[error("failed to read cached Sonarr titles at {path}")]
+    #[error("no Radarr movie title found for tmdb {tmdb_id}")]
+    NotFound { tmdb_id: i64 },
+    #[error("failed to read cached Radarr titles at {path}")]
     CacheRead {
         #[source]
         source: std::io::Error,
         path: PathBuf,
     },
-    #[error("failed to write cached Sonarr titles at {path}")]
+    #[error("failed to write cached Radarr titles at {path}")]
     CacheWrite {
         #[source]
         source: std::io::Error,
         path: PathBuf,
     },
-    #[error("failed to parse cached Sonarr titles at {path}")]
+    #[error("failed to parse cached Radarr titles at {path}")]
     CacheParse {
         #[source]
         source: serde_json::Error,
         path: PathBuf,
     },
-    #[error("failed to serialise cached Sonarr titles")]
+    #[error("failed to serialise cached Radarr titles")]
     CacheSerialise(#[from] serde_json::Error),
     #[error("failed to create cache directory at {path}")]
     CacheDir {

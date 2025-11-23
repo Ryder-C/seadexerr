@@ -12,12 +12,8 @@ query MediaById($idIn: [Int], $perPage: Int) {
   Page(perPage: $perPage) {
     media(id_in: $idIn) {
       id
+      type
       format
-      title {
-        english
-        romaji
-        native
-      }
     }
   }
 }
@@ -93,16 +89,8 @@ impl AniListClient {
                     None => continue,
                 };
 
-                let title = media
-                    .title
-                    .english
-                    .or(media.title.romaji)
-                    .or(media.title.native)
-                    .unwrap_or_else(|| format!("AniList {}", media.id));
-
                 result.entry(media.id).or_insert(AniListMedia {
                     id: media.id,
-                    title,
                     format,
                 });
             }
@@ -151,7 +139,6 @@ impl MediaFormat {
 #[derive(Debug, Clone)]
 pub struct AniListMedia {
     pub id: i64,
-    pub title: String,
     pub format: MediaFormat,
 }
 
@@ -190,15 +177,9 @@ struct GraphqlPage {
 #[derive(Debug, Deserialize)]
 struct GraphqlMedia {
     id: i64,
+    #[serde(rename = "type")]
+    media_type: Option<String>,
     format: Option<String>,
-    title: AniListTitle,
-}
-
-#[derive(Debug, Deserialize)]
-struct AniListTitle {
-    english: Option<String>,
-    romaji: Option<String>,
-    native: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -208,9 +189,9 @@ struct GraphqlError {
 
 #[derive(Debug, Error)]
 pub enum AniListError {
-    #[error("http error when querying AniList GraphQL API")]
+    #[error("http error when querying AniList GraphQL API: {0}")]
     Http(#[from] reqwest::Error),
-    #[error("failed to deserialise AniList response payload")]
+    #[error("failed to deserialise AniList response payload: {0}")]
     Deserialisation(#[from] serde_json::Error),
     #[error("AniList response missing data node")]
     MissingData,
