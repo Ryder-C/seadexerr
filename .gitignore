@@ -2,3 +2,4 @@ compose.yaml
 /target
 data/
 .vscode
+.dev-env
