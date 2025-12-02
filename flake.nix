@@ -6,18 +6,21 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = {
-    self,
-    nixpkgs,
-    flake-utils,
-  }:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+    }:
     flake-utils.lib.eachDefaultSystem (
-      system: let
+      system:
+      let
         pkgs = import nixpkgs {
           inherit system;
           config.allowUnfree = true;
         };
-      in {
+      in
+      {
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             sonarr
@@ -37,6 +40,8 @@
 
           shellHook = ''
             echo "Seadexerr development environment loaded."
+
+            export RUST_LOG="debug"
 
             export SEADEXERR_DEV_ROOT="$PWD/.dev-env"
             mkdir -p "$SEADEXERR_DEV_ROOT"
@@ -116,6 +121,11 @@
             trap cleanup EXIT
 
             echo "Services running in background. Data stored in .dev-env/"
+
+            if [[ $- == *i* ]] && [ -n "$SHELL" ]; then
+              $SHELL
+              exit
+            fi
           '';
         };
       }
