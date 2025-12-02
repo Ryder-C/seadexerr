@@ -1,19 +1,28 @@
 [package]
 name = "seadexerr"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
 axum = { version = "0.8.7", features = ["macros"] }
 quick-xml = "0.38.4"
-reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12.24", default-features = false, features = [
+    "json",
+    "rustls-tls",
+] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 serde_with = "3.16.0"
 thiserror = "2.0.17"
 time = { version = "0.3.44", features = ["formatting", "parsing"] }
-tokio = { version = "1.48.0", features = ["fs", "macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.48.0", features = [
+    "fs",
+    "macros",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["fmt", "env-filter"] }
 url = "2.5.7"

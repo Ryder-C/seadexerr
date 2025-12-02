@@ -118,14 +118,35 @@ async fn torznab_handler(
         TorznabOperation::Unsupported(name) => name,
     };
 
-    info!(
-        operation = operation_name,
-        tvdb = query.tvdb_id.as_deref(),
-        tmdb = query.tmdb_id.as_deref(),
-        season = query.season.as_deref(),
-        limit = query.limit,
-        "torznab request received"
-    );
+    let valid = match &operation {
+        TorznabOperation::Caps => true,
+        TorznabOperation::Search => query.query.is_none() && category_filter_matches(&query.cat),
+        TorznabOperation::TvSearch => {
+            query.tvdb_identifier().is_some() && query.season_number().is_some()
+        }
+        TorznabOperation::MovieSearch => query.tmdb_identifier().is_some(),
+        TorznabOperation::Unsupported(_) => false,
+    };
+
+    if valid {
+        info!(
+            operation = operation_name,
+            tvdb = query.tvdb_id.as_deref(),
+            tmdb = query.tmdb_id.as_deref(),
+            season = query.season.as_deref(),
+            limit = query.limit,
+            "Valid torznab request received"
+        );
+    } else {
+        debug!(
+            operation = operation_name,
+            tvdb = query.tvdb_id.as_deref(),
+            tmdb = query.tmdb_id.as_deref(),
+            season = query.season.as_deref(),
+            limit = query.limit,
+            "Invalid torznab request received"
+        );
+    }
 
     match operation {
         TorznabOperation::Caps => respond_caps(&state),

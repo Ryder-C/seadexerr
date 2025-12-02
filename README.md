@@ -3,7 +3,7 @@
 A Prowlarr indexer for [Seadex](https://releases.moe/) torrents. Always get the best Seadex release.
 
 > [!NOTE]
-> Requires indexer flag `internal` to be unused for now
+> Automatic Searching requires indexer flag `internal` to be unused for now
 
 ## Docker Compose
 
@@ -77,6 +77,7 @@ In Sonarr or Radarr:
 - [x] Movie Support (TMDB + Radarr)
 - [x] RSS Refresh
 - [x] Local PlexAniBridge Mappings
+- [x] Season Pack Support
 
 This project uses [PlexAniBridge Mappings](https://github.com/eliasbenb/PlexAniBridge-Mappings).
 
