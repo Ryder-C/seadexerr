@@ -121,11 +121,6 @@
             trap cleanup EXIT
 
             echo "Services running in background. Data stored in .dev-env/"
-
-            if [[ $- == *i* ]] && [ -n "$SHELL" ]; then
-              $SHELL
-              exit
-            fi
           '';
         };
       }
