@@ -17,6 +17,8 @@ services:
       - SONARR_API_KEY=<your api key here>
       - RADARR_BASE_URL=http://localhost:7878/
       - RADARR_API_KEY=<your api key here>
+      # - SEADEXER_SONARR_ENABLED=false
+      # - SEADEXER_RADARR_ENABLED=false
 ```
 
 <details>
