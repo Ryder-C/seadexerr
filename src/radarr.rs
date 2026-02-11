@@ -75,8 +75,29 @@ impl RadarrClient {
             .get(url)
             .header("X-Api-Key", &self.api_key)
             .send()
-            .await?
-            .error_for_status()?;
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            let is_not_found = status == reqwest::StatusCode::NOT_FOUND
+                || body.contains("was not found");
+            if is_not_found {
+                debug!(tmdb_id, status = status.as_u16(), "Radarr movie not found on TMDb");
+                return Err(RadarrError::NotFound { tmdb_id });
+            }
+            tracing::warn!(
+                tmdb_id,
+                status = status.as_u16(),
+                body = %body,
+                "Radarr movie lookup returned non-success status"
+            );
+            return Err(RadarrError::Api {
+                tmdb_id,
+                status: status.as_u16(),
+                body,
+            });
+        }
 
         let payload: MovieLookupEntry = response.json().await?;
 
@@ -218,6 +239,12 @@ pub enum RadarrError {
     Url(#[from] url::ParseError),
     #[error("http error when querying Radarr api")]
     Http(#[from] reqwest::Error),
+    #[error("Radarr api returned {status} for tmdb {tmdb_id}: {body}")]
+    Api {
+        tmdb_id: i64,
+        status: u16,
+        body: String,
+    },
     #[error("no Radarr movie title found for tmdb {tmdb_id}")]
     NotFound { tmdb_id: i64 },
     #[error("failed to read cached Radarr titles at {path}")]

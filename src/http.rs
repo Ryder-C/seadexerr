@@ -676,14 +676,25 @@ async fn respond_movie_search(
     }
 
     let total = collected.len();
-    let feed_title = state
+    let feed_title = match state
         .radarr
         .as_ref()
         .unwrap() // We can be sure Radarr is enabled here
         .resolve_name(tmdb_id)
         .await
-        .map(|movie| format_movie_feed_title(&movie.title, movie.year))
-        .map_err(HttpError::Radarr)?;
+    {
+        Ok(movie) => format_movie_feed_title(&movie.title, movie.year),
+        Err(RadarrError::NotFound { .. } | RadarrError::Api { .. }) => {
+            info!(tmdb_id, "Radarr movie lookup failed; returning empty result set");
+            let xml = torznab::render_feed(&metadata, &[], offset, 0)?;
+            return Ok((
+                [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
+                xml,
+            )
+                .into_response());
+        }
+        Err(err) => return Err(HttpError::Radarr(err)),
+    };
     let items: Vec<TorznabItem> = collected
         .into_iter()
         .skip(offset)
@@ -803,7 +814,7 @@ async fn resolve_movie_generic_title(
 
     let movie = match radarr.resolve_name(tmdb_id).await {
         Ok(movie) => movie,
-        Err(RadarrError::NotFound { .. }) => return Ok(None),
+        Err(RadarrError::NotFound { .. } | RadarrError::Api { .. }) => return Ok(None),
         Err(err) => return Err(HttpError::Radarr(err)),
     };
 
