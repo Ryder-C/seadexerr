@@ -10,11 +10,15 @@ mod torznab;
 use std::sync::Arc;
 
 use anyhow::Context;
+use reqwest::Url;
 use tokio::net::TcpListener;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::anilist::AniListClient;
-use crate::config::AppConfig;
+use crate::config::{
+    ANILIST_BASE_URL, AppConfig, DEFAULT_LIMIT, MAPPING_REFRESH_INTERVAL, MAPPING_SOURCE_URL,
+    RELEASES_BASE_URL, TIMEOUT, get_data_path,
+};
 use crate::mapping::PlexAniBridgeMappings;
 use crate::radarr::RadarrClient;
 use crate::releases::ReleasesClient;
@@ -38,23 +42,24 @@ async fn main() -> anyhow::Result<()> {
 
     let config = AppConfig::from_env().context("failed to load configuration")?;
     let listen_addr = config.listen_addr;
-    let releases = ReleasesClient::new(
-        config.releases_base_url.clone(),
-        config.releases_timeout,
-        config.default_limit,
-    )
-    .context("failed to construct releases.moe client")?;
 
-    let anilist = AniListClient::new(config.anilist_base_url.clone(), config.anilist_timeout)
+    let releases_url = Url::parse(RELEASES_BASE_URL).context("invalid RELEASES_BASE_URL")?;
+    let releases = ReleasesClient::new(releases_url, TIMEOUT, DEFAULT_LIMIT)
+        .context("failed to construct releases.moe client")?;
+
+    let anilist_url = Url::parse(ANILIST_BASE_URL).context("invalid ANILIST_BASE_URL")?;
+    let anilist = AniListClient::new(anilist_url, TIMEOUT)
         .context("failed to construct AniList client")?;
 
+    let data_path = get_data_path();
+
     let sonarr = if let Some(sonarr_config) = &config.sonarr {
-        let sonarr_cache_path = config.data_path.join("sonarr_titles.json");
+        let sonarr_cache_path = data_path.join("sonarr_titles.json");
         Some(
             SonarrClient::new(
                 sonarr_config.url.clone(),
                 sonarr_config.api_key.clone(),
-                sonarr_config.timeout,
+                TIMEOUT,
                 sonarr_cache_path,
             )
             .context("failed to construct Sonarr client")?,
@@ -64,12 +69,12 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let radarr = if let Some(radarr_config) = &config.radarr {
-        let radarr_cache_path = config.data_path.join("radarr_titles.json");
+        let radarr_cache_path = data_path.join("radarr_titles.json");
         Some(
             RadarrClient::new(
                 radarr_config.url.clone(),
                 radarr_config.api_key.clone(),
-                radarr_config.timeout,
+                TIMEOUT,
                 radarr_cache_path,
             )
             .context("failed to construct Radarr client")?,
@@ -78,11 +83,12 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
+    let mapping_source_url = Url::parse(MAPPING_SOURCE_URL).context("invalid MAPPING_SOURCE_URL")?;
     let mappings = PlexAniBridgeMappings::bootstrap(
-        config.data_path.clone(),
-        config.mapping_source_url.clone(),
-        config.mapping_refresh_interval,
-        config.mapping_timeout,
+        data_path,
+        mapping_source_url,
+        MAPPING_REFRESH_INTERVAL,
+        TIMEOUT,
     )
     .await
     .context("failed to initialise PlexAniBridge mappings store")?;
