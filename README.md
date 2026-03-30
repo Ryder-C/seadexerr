@@ -3,7 +3,7 @@
 A Prowlarr indexer for [Seadex](https://releases.moe/) torrents. Always get the best Seadex release.
 
 > [!NOTE]
-> Automatic Searching requires indexer flag `internal` to be unused for now
+> Automatic Searching requires indexer flag `Freeleech25` to be unused for now
 
 ## Docker Compose
 
@@ -52,7 +52,7 @@ In Sonarr or Radarr:
 1. Go to **Settings → Custom Formats**
 2. Create a new **Custom Format** named `Seadex`
 3. Add an **Indexer Flag Condition**
-4. Set both **Name** and **Flag** to `Internal` (leave boxes unchecked)
+4. Set both **Name** and **Flag** to `Freeleech25` (leave boxes unchecked)
 5. Click **Test** and **Save**
 6. Go to **Settings → Profiles**
 7. Click on your profile and give a high score to Seadex (Ex: 5000)
