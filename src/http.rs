@@ -176,9 +176,9 @@ async fn respond_generic_search(
     let metadata = build_channel_metadata(state)?;
     let limit = query
         .limit
-        .unwrap_or(state.config.default_limit)
+        .unwrap_or(crate::config::DEFAULT_LIMIT)
         .max(1)
-        .min(state.config.default_limit);
+        .min(crate::config::DEFAULT_LIMIT);
     let offset = query.offset.unwrap_or(0);
 
     if query.query.is_some() {
@@ -225,7 +225,7 @@ async fn respond_generic_search(
         offset, "serving torznab search via recent public torrents"
     );
 
-    let fetch_limit = state.config.default_limit;
+    let fetch_limit = crate::config::DEFAULT_LIMIT;
     let mut torrents = state
         .releases
         .recent_public_torrents(fetch_limit)
@@ -405,9 +405,9 @@ async fn respond_tv_search(state: &AppState, query: &TorznabQuery) -> Result<Res
     let metadata = build_channel_metadata(state)?;
     let limit = query
         .limit
-        .unwrap_or(state.config.default_limit)
+        .unwrap_or(crate::config::DEFAULT_LIMIT)
         .max(1)
-        .min(state.config.default_limit);
+        .min(crate::config::DEFAULT_LIMIT);
 
     let offset = query.offset.unwrap_or(0);
 
@@ -478,7 +478,7 @@ async fn respond_tv_search(state: &AppState, query: &TorznabQuery) -> Result<Res
 
     debug!(tvdb_id, season, anilist_id, "querying releases.moe");
 
-    let fetch_limit = offset.saturating_add(limit).min(state.config.default_limit);
+    let fetch_limit = offset.saturating_add(limit).min(crate::config::DEFAULT_LIMIT);
     let collected: Vec<Torrent> = match state
         .releases
         .search_torrents(anilist_id, fetch_limit)
@@ -565,9 +565,9 @@ async fn respond_movie_search(
     let metadata = build_channel_metadata(state)?;
     let limit = query
         .limit
-        .unwrap_or(state.config.default_limit)
+        .unwrap_or(crate::config::DEFAULT_LIMIT)
         .max(1)
-        .min(state.config.default_limit);
+        .min(crate::config::DEFAULT_LIMIT);
 
     let offset = query.offset.unwrap_or(0);
 
@@ -623,7 +623,7 @@ async fn respond_movie_search(
         anilist_id, limit, "movie-search querying releases.moe"
     );
 
-    let fetch_limit = offset.saturating_add(limit).min(state.config.default_limit);
+    let fetch_limit = offset.saturating_add(limit).min(crate::config::DEFAULT_LIMIT);
     let collected: Vec<Torrent> = match state
         .releases
         .search_torrents(anilist_id, fetch_limit)
@@ -746,8 +746,8 @@ fn build_channel_metadata(state: &AppState) -> Result<ChannelMetadata, HttpError
 
     let site_link = base.clone();
     Ok(ChannelMetadata {
-        title: state.config.application_title.clone(),
-        description: state.config.application_description.clone(),
+        title: crate::config::APPLICATION_TITLE.to_string(),
+        description: crate::config::APPLICATION_DESCRIPTION.to_string(),
         site_link: site_link.to_string(),
     })
 }
