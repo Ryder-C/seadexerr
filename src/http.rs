@@ -16,7 +16,6 @@ use thiserror::Error;
 use tracing::{debug, info};
 use url::Url;
 
-use crate::anilist::{AniListError, MediaFormat};
 use crate::radarr::RadarrError;
 use crate::releases::{ReleasesError, Torrent};
 use crate::torznab::{self, ChannelMetadata, TorznabItem};
@@ -24,6 +23,10 @@ use crate::{
     AppState, SharedAppState,
     mapping::{MappingError, TvdbMapping, parse_season_key},
     sonarr::SonarrError,
+};
+use crate::{
+    anilist::{AniListError, MediaFormat},
+    config,
 };
 
 pub fn router(state: SharedAppState) -> Router {
@@ -176,9 +179,8 @@ async fn respond_generic_search(
     let metadata = build_channel_metadata(state)?;
     let limit = query
         .limit
-        .unwrap_or(crate::config::DEFAULT_LIMIT)
-        .max(1)
-        .min(crate::config::DEFAULT_LIMIT);
+        .unwrap_or(config::DEFAULT_LIMIT)
+        .clamp(1, config::DEFAULT_LIMIT);
     let offset = query.offset.unwrap_or(0);
 
     if query.query.is_some() {
@@ -225,7 +227,7 @@ async fn respond_generic_search(
         offset, "serving torznab search via recent public torrents"
     );
 
-    let fetch_limit = crate::config::DEFAULT_LIMIT;
+    let fetch_limit = config::DEFAULT_LIMIT;
     let mut torrents = state
         .releases
         .recent_public_torrents(fetch_limit)
@@ -321,6 +323,8 @@ async fn respond_generic_search(
     let mut active_tmdb_ids: HashSet<i64> = HashSet::new();
     let mut items = Vec::with_capacity(window.len());
 
+    let mut grouped_torrents: HashMap<(String, Vec<u32>), Vec<Torrent>> = HashMap::new();
+
     for torrent in window.into_iter() {
         let Some(anilist_id) = torrent.anilist_id else {
             debug!(torrent_id = %torrent.id, "skipping torrent without AniList id");
@@ -345,7 +349,10 @@ async fn respond_generic_search(
                         &mut active_tvdb_ids,
                     )
                     .await?;
-                    items.push(build_torznab_item(torrent, title, tv_category_ids()));
+                    grouped_torrents
+                        .entry((title, tv_category_ids()))
+                        .or_default()
+                        .push(torrent);
                 }
             }
             MediaFormat::Movie => {
@@ -359,11 +366,17 @@ async fn respond_generic_search(
                     .await?
                     {
                         Some(title) => {
-                            items.push(build_torznab_item(torrent, title, movie_category_ids()));
+                            grouped_torrents
+                                .entry((title, movie_category_ids()))
+                                .or_default()
+                                .push(torrent);
                         }
                         None => {
                             let fallback = default_torrent_title(&torrent.id);
-                            items.push(build_torznab_item(torrent, fallback, movie_category_ids()));
+                            grouped_torrents
+                                .entry((fallback, movie_category_ids()))
+                                .or_default()
+                                .push(torrent);
                         }
                     }
                 }
@@ -376,6 +389,10 @@ async fn respond_generic_search(
                 );
             }
         }
+    }
+
+    for ((title, categories), torrents) in grouped_torrents {
+        items.extend(process_torrents(state, torrents, title, categories));
     }
 
     let xml = torznab::render_feed(&metadata, &items, offset, total)?;
@@ -405,9 +422,8 @@ async fn respond_tv_search(state: &AppState, query: &TorznabQuery) -> Result<Res
     let metadata = build_channel_metadata(state)?;
     let limit = query
         .limit
-        .unwrap_or(crate::config::DEFAULT_LIMIT)
-        .max(1)
-        .min(crate::config::DEFAULT_LIMIT);
+        .unwrap_or(config::DEFAULT_LIMIT)
+        .clamp(1, config::DEFAULT_LIMIT);
 
     let offset = query.offset.unwrap_or(0);
 
@@ -478,7 +494,7 @@ async fn respond_tv_search(state: &AppState, query: &TorznabQuery) -> Result<Res
 
     debug!(tvdb_id, season, anilist_id, "querying releases.moe");
 
-    let fetch_limit = offset.saturating_add(limit).min(crate::config::DEFAULT_LIMIT);
+    let fetch_limit = offset.saturating_add(limit).min(config::DEFAULT_LIMIT);
     let collected: Vec<Torrent> = match state
         .releases
         .search_torrents(anilist_id, fetch_limit)
@@ -542,13 +558,14 @@ async fn respond_tv_search(state: &AppState, query: &TorznabQuery) -> Result<Res
     let total = collected.len();
     let feed_title = resolve_feed_title(state, tvdb_id, season).await?;
 
-    let items: Vec<TorznabItem> = collected
+    let torrents: Vec<Torrent> = collected
         .into_iter()
         .filter(|item| item.files.len() > 1)
         .skip(offset)
         .take(limit)
-        .map(|torrent| build_torznab_item(torrent, feed_title.clone(), tv_category_ids()))
         .collect();
+
+    let items = process_torrents(state, torrents, feed_title, tv_category_ids());
     let xml = torznab::render_feed(&metadata, &items, offset, total)?;
 
     Ok((
@@ -565,9 +582,8 @@ async fn respond_movie_search(
     let metadata = build_channel_metadata(state)?;
     let limit = query
         .limit
-        .unwrap_or(crate::config::DEFAULT_LIMIT)
-        .max(1)
-        .min(crate::config::DEFAULT_LIMIT);
+        .unwrap_or(config::DEFAULT_LIMIT)
+        .clamp(1, config::DEFAULT_LIMIT);
 
     let offset = query.offset.unwrap_or(0);
 
@@ -623,7 +639,7 @@ async fn respond_movie_search(
         anilist_id, limit, "movie-search querying releases.moe"
     );
 
-    let fetch_limit = offset.saturating_add(limit).min(crate::config::DEFAULT_LIMIT);
+    let fetch_limit = offset.saturating_add(limit).min(config::DEFAULT_LIMIT);
     let collected: Vec<Torrent> = match state
         .releases
         .search_torrents(anilist_id, fetch_limit)
@@ -685,7 +701,10 @@ async fn respond_movie_search(
     {
         Ok(movie) => format_movie_feed_title(&movie.title, movie.year),
         Err(RadarrError::NotFound { .. } | RadarrError::Api { .. }) => {
-            info!(tmdb_id, "Radarr movie lookup failed; returning empty result set");
+            info!(
+                tmdb_id,
+                "Radarr movie lookup failed; returning empty result set"
+            );
             let xml = torznab::render_feed(&metadata, &[], offset, 0)?;
             return Ok((
                 [(header::CONTENT_TYPE, "application/rss+xml; charset=utf-8")],
@@ -695,12 +714,9 @@ async fn respond_movie_search(
         }
         Err(err) => return Err(HttpError::Radarr(err)),
     };
-    let items: Vec<TorznabItem> = collected
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .map(|torrent| build_torznab_item(torrent, feed_title.clone(), movie_category_ids()))
-        .collect();
+
+    let torrents: Vec<Torrent> = collected.into_iter().skip(offset).take(limit).collect();
+    let items = process_torrents(state, torrents, feed_title, movie_category_ids());
 
     let xml = torznab::render_feed(&metadata, &items, offset, total)?;
 
@@ -746,8 +762,8 @@ fn build_channel_metadata(state: &AppState) -> Result<ChannelMetadata, HttpError
 
     let site_link = base.clone();
     Ok(ChannelMetadata {
-        title: crate::config::APPLICATION_TITLE.to_string(),
-        description: crate::config::APPLICATION_DESCRIPTION.to_string(),
+        title: config::APPLICATION_TITLE.to_string(),
+        description: config::APPLICATION_DESCRIPTION.to_string(),
         site_link: site_link.to_string(),
     })
 }
@@ -870,6 +886,7 @@ fn build_torznab_item(
     torrent: crate::releases::Torrent,
     title: String,
     categories: Vec<u32>,
+    seeders: u32,
 ) -> TorznabItem {
     let crate::releases::Torrent {
         id,
@@ -878,12 +895,13 @@ fn build_torznab_item(
         info_hash,
         published,
         size_bytes,
-        is_best,
+        is_best: _,
+        dual_audio: _,
+        tags: _,
         files: _,
         anilist_id: _,
     } = torrent;
 
-    let seeders = if is_best { 1000 } else { 100 };
     let comments = if source_url.is_empty() {
         None
     } else {
@@ -904,6 +922,47 @@ fn build_torznab_item(
     }
 }
 
+fn process_torrents(
+    state: &AppState,
+    torrents: Vec<Torrent>,
+    title: String,
+    categories: Vec<u32>,
+) -> Vec<TorznabItem> {
+    let filtered: Vec<Torrent> = torrents
+        .into_iter()
+        .filter(|torrent| {
+            if state.config.skip_deband && torrent.tags.contains(&"Deband Required".to_string()) {
+                debug!(torrent_id = %torrent.id, "skipping torrent due to Deband Required tag");
+                return false;
+            }
+            true
+        })
+        .collect();
+
+    let has_dual_audio = state.config.prefer_dual_audio && filtered.iter().any(|t| t.dual_audio);
+
+    filtered
+        .into_iter()
+        .map(|torrent| {
+            let seeders = if state.config.prefer_dual_audio {
+                if has_dual_audio {
+                    if torrent.dual_audio { 1000 } else { 100 }
+                } else if torrent.is_best {
+                    1000
+                } else {
+                    100
+                }
+            } else if torrent.is_best {
+                1000
+            } else {
+                100
+            };
+
+            build_torznab_item(torrent, title.clone(), categories.clone(), seeders)
+        })
+        .collect()
+}
+
 fn category_filter_matches(cat_param: &Option<String>) -> bool {
     match cat_param {
         None => true,
@@ -920,12 +979,12 @@ fn category_filter_matches(cat_param: &Option<String>) -> bool {
                 if trimmed == "0" {
                     return true;
                 }
-                if let Ok(id) = trimmed.parse::<u32>() {
-                    if categories.iter().any(|category| {
+                if let Ok(id) = trimmed.parse::<u32>()
+                    && categories.iter().any(|category| {
                         category.id == id || category.subcategories.iter().any(|sub| sub.id == id)
-                    }) {
-                        matches_supported = true;
-                    }
+                    })
+                {
+                    matches_supported = true;
                 }
             }
 

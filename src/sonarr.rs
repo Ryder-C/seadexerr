@@ -152,7 +152,7 @@ impl SonarrClient {
         })
         .await
         .map_err(|source| SonarrError::CacheWrite {
-            source: std::io::Error::new(std::io::ErrorKind::Other, format!("join error: {source}")),
+            source: std::io::Error::other(format!("join error: {source}")),
             path: self.cache_path.clone(),
         })?;
 
@@ -160,7 +160,7 @@ impl SonarrClient {
             // For simplicity, map any persistence error to CacheWrite. We avoid trying to
             // downcast boxed errors back to concrete types here.
             return Err(SonarrError::CacheWrite {
-                source: std::io::Error::new(std::io::ErrorKind::Other, "failed to persist cache"),
+                source: std::io::Error::other("failed to persist cache"),
                 path: self.cache_path.clone(),
             });
         }

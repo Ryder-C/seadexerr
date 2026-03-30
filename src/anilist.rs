@@ -178,7 +178,7 @@ struct GraphqlPage {
 struct GraphqlMedia {
     id: i64,
     #[serde(rename = "type")]
-    media_type: Option<String>,
+    _media_type: Option<String>,
     format: Option<String>,
 }
 
