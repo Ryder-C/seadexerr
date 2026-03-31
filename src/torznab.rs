@@ -37,7 +37,7 @@ pub struct TorznabSubCategory {
     pub name: &'static str,
 }
 
-const TAG: &str = "internal";
+const TAG: &str = "freeleech25";
 const DESC: &str = "Description";
 
 pub const ANIME_CATEGORY: TorznabCategory = TorznabCategory {
