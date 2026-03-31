@@ -4,6 +4,7 @@ mod http;
 mod mapping;
 mod radarr;
 mod releases;
+mod service;
 mod sonarr;
 mod torznab;
 
@@ -22,6 +23,7 @@ use crate::config::{
 use crate::mapping::PlexAniBridgeMappings;
 use crate::radarr::RadarrClient;
 use crate::releases::ReleasesClient;
+use crate::service::SearchService;
 use crate::sonarr::SonarrClient;
 
 #[derive(Clone)]
@@ -32,6 +34,7 @@ pub struct AppState {
     pub radarr: Option<RadarrClient>,
     pub releases: ReleasesClient,
     pub mappings: PlexAniBridgeMappings,
+    pub service: Arc<SearchService>,
 }
 
 pub type SharedAppState = Arc<AppState>;
@@ -93,6 +96,15 @@ async fn main() -> anyhow::Result<()> {
     .await
     .context("failed to initialise PlexAniBridge mappings store")?;
 
+    let service = Arc::new(SearchService::new(
+        anilist.clone(),
+        sonarr.clone(),
+        radarr.clone(),
+        releases.clone(),
+        mappings.clone(),
+        config.clone(),
+    ));
+
     let state = Arc::new(AppState {
         config,
         anilist,
@@ -100,6 +112,7 @@ async fn main() -> anyhow::Result<()> {
         radarr,
         releases,
         mappings,
+        service,
     });
     let app = http::router(state.clone());
 
