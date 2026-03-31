@@ -11,7 +11,7 @@ use serde::Deserialize;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tokio::task;
-use tracing::debug;
+use tracing::trace;
 use url::Url;
 
 #[derive(Debug, Clone)]
@@ -48,7 +48,7 @@ impl SonarrClient {
 
     pub async fn resolve_name(&self, tvdb_id: i64) -> Result<String, SonarrError> {
         if let Some(cached) = self.cached_title(tvdb_id).await {
-            debug!(tvdb_id, "using cached Sonarr title");
+            trace!(tvdb_id, "using cached Sonarr title");
             return Ok(cached);
         }
 
@@ -62,7 +62,7 @@ impl SonarrClient {
             pairs.append_pair("term", &format!("tvdb:{tvdb_id}"));
         }
 
-        debug!(
+        trace!(
             tvdb_id,
             url = %url,
             "requesting Sonarr series lookup"
@@ -78,7 +78,7 @@ impl SonarrClient {
 
         let payload: Vec<SeriesLookupEntry> = response.json().await?;
 
-        debug!(
+        trace!(
             tvdb_id,
             results = payload.len(),
             "Sonarr series lookup response received"

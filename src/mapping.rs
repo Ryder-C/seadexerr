@@ -186,7 +186,7 @@ impl PlexAniBridgeMappings {
             })?;
 
         if response.status() == StatusCode::NOT_MODIFIED {
-            debug!(
+            trace!(
                 path = %self.path.display(),
                 url = %self.source_url,
                 "plexanibridge mappings not modified; skipping refresh"
@@ -376,7 +376,7 @@ impl PlexAniBridgeMappings {
             if let Some(cache) = guard.as_ref()
                 && cache.modified == modified
             {
-                debug!(
+                trace!(
                     path = %self.path.display(),
                     "using cached plexanibridge mappings"
                 );
@@ -489,7 +489,7 @@ impl PlexAniBridgeMappings {
         let season_key = format!("s{season}");
 
         if let Some(entries) = mappings.tvdb_to_entries.get(&tvdb_id) {
-            debug!(
+            trace!(
                 tvdb_id,
                 season,
                 candidates = entries.len(),
@@ -498,7 +498,7 @@ impl PlexAniBridgeMappings {
 
             for entry in entries {
                 if entry.seasons.iter().any(|key| key == &season_key) {
-                    debug!(
+                    trace!(
                         tvdb_id,
                         season,
                         anilist_id = entry.anilist_id,
@@ -509,7 +509,7 @@ impl PlexAniBridgeMappings {
             }
         }
 
-        debug!(
+        trace!(
             tvdb_id,
             season,
             path = %self.path.display(),
@@ -525,7 +525,7 @@ impl PlexAniBridgeMappings {
     ) -> Result<Option<i64>, MappingError> {
         let mappings = self.load_mappings().await?;
         let Some(entries) = mappings.tvdb_to_entries.get(&tvdb_id) else {
-            debug!(tvdb_id, "no entries found for tvdb id");
+            trace!(tvdb_id, "no entries found for tvdb id");
             return Ok(None);
         };
 
@@ -551,14 +551,14 @@ impl PlexAniBridgeMappings {
         }
 
         if let Some((anilist_id, season)) = best {
-            debug!(
+            trace!(
                 tvdb_id,
                 anilist_id, season, "selected mapping for tv search"
             );
             return Ok(Some(anilist_id));
         }
 
-        debug!(tvdb_id, "failed to select mapping for movie search");
+        trace!(tvdb_id, "failed to select mapping for movie search");
         Ok(None)
     }
 
@@ -568,10 +568,10 @@ impl PlexAniBridgeMappings {
     ) -> Result<Option<i64>, MappingError> {
         let mappings = self.load_mappings().await?;
         if let Some(anilist_id) = mappings.tmdb_to_anilist.get(&tmdb_id) {
-            debug!(tmdb_id, anilist_id, "resolved tmdb mapping");
+            trace!(tmdb_id, anilist_id, "resolved tmdb mapping");
             Ok(Some(*anilist_id))
         } else {
-            debug!(tmdb_id, "no tmdb mapping found");
+            trace!(tmdb_id, "no tmdb mapping found");
             Ok(None)
         }
     }

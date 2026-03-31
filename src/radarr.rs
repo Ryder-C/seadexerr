@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tokio::task;
-use tracing::debug;
+use tracing::trace;
 use url::Url;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,7 +54,7 @@ impl RadarrClient {
 
     pub async fn resolve_name(&self, tmdb_id: i64) -> Result<RadarrMovie, RadarrError> {
         if let Some(existing) = self.cached_movie(tmdb_id).await {
-            debug!(tmdb_id, "using cached Radarr title");
+            trace!(tmdb_id, "using cached Radarr title");
             return Ok(existing);
         }
 
@@ -68,7 +68,7 @@ impl RadarrClient {
             pairs.append_pair("tmdbId", &tmdb_id.to_string());
         }
 
-        debug!(tmdb_id, url = %url, "requesting Radarr movie lookup");
+        trace!(tmdb_id, url = %url, "requesting Radarr movie lookup");
 
         let response = self
             .http
@@ -83,7 +83,7 @@ impl RadarrClient {
             let is_not_found = status == reqwest::StatusCode::NOT_FOUND
                 || body.contains("was not found");
             if is_not_found {
-                debug!(tmdb_id, status = status.as_u16(), "Radarr movie not found on TMDb");
+                trace!(tmdb_id, status = status.as_u16(), "Radarr movie not found on TMDb");
                 return Err(RadarrError::NotFound { tmdb_id });
             }
             tracing::warn!(
@@ -106,7 +106,7 @@ impl RadarrClient {
         };
 
         let Some(year) = payload.year else {
-            debug!(tmdb_id, "skipping Radarr movie lookup due to missing year");
+            trace!(tmdb_id, "skipping Radarr movie lookup due to missing year");
             return Err(RadarrError::NotFound { tmdb_id });
         };
 
