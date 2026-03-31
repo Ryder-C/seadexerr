@@ -8,7 +8,7 @@ use crate::releases::{ReleasesClient, ReleasesError, Torrent};
 use crate::sonarr::{SonarrClient, SonarrError};
 use crate::torznab::{self, TorznabItem, ANIME_CATEGORY, MOVIE_CATEGORY};
 use thiserror::Error;
-use tracing::debug;
+use tracing::{debug, trace, warn};
 
 #[derive(Debug, Error)]
 pub enum ServiceError {
@@ -71,7 +71,7 @@ impl SearchService {
             return Ok((Vec::new(), 0));
         }
 
-        debug!(tvdb_id, season, "resolving plexanibridge mapping");
+        trace!(tvdb_id, season, "resolving plexanibridge mapping");
 
         let anilist_id = match self
             .mappings
@@ -86,7 +86,7 @@ impl SearchService {
             }
         };
 
-        debug!(tvdb_id, season, anilist_id, "querying releases.moe");
+        trace!(tvdb_id, season, anilist_id, "querying releases.moe");
 
         let fetch_limit = offset.saturating_add(limit).min(config::DEFAULT_LIMIT);
         let collected: Vec<Torrent> = self
@@ -160,7 +160,7 @@ impl SearchService {
             }
         };
 
-        debug!(tmdb_id, anilist_id, limit, "movie-search querying releases.moe");
+        trace!(tmdb_id, anilist_id, limit, "movie-search querying releases.moe");
 
         let fetch_limit = offset.saturating_add(limit).min(config::DEFAULT_LIMIT);
         let collected: Vec<Torrent> = self
@@ -234,7 +234,7 @@ impl SearchService {
             return Ok((Vec::new(), 0));
         }
 
-        debug!(limit, offset, "serving search via recent public torrents");
+        trace!(limit, offset, "serving search via recent public torrents");
 
         let fetch_limit = config::DEFAULT_LIMIT;
         let mut torrents = self
@@ -334,12 +334,23 @@ impl SearchService {
             match &media.format {
                 format if self.format_allowed(format) => {
                     if self.sonarr.is_some() {
-                        let title = self.resolve_tv_generic_title(
+                        let title = match self.resolve_tv_generic_title(
                             &torrent,
                             &mut tv_title_cache,
                             &mut active_tvdb_ids,
                         )
-                        .await?;
+                        .await
+                        {
+                            Ok(title) => title,
+                            Err(error) => {
+                                warn!(
+                                    torrent_id = %torrent.id,
+                                    %error,
+                                    "failed to resolve tv title for generic search; using fallback"
+                                );
+                                self.default_torrent_title(&torrent.id)
+                            }
+                        };
                         grouped_torrents
                             .entry((title, self.tv_category_ids()))
                             .or_default()
@@ -353,15 +364,27 @@ impl SearchService {
                             &mut movie_title_cache,
                             &mut active_tmdb_ids,
                         )
-                        .await?
+                        .await
                         {
-                            Some(title) => {
+                            Ok(Some(title)) => {
                                 grouped_torrents
                                     .entry((title, self.movie_category_ids()))
                                     .or_default()
                                     .push(torrent);
                             }
-                            None => {
+                            Ok(None) => {
+                                let fallback = self.default_torrent_title(&torrent.id);
+                                grouped_torrents
+                                    .entry((fallback, self.movie_category_ids()))
+                                    .or_default()
+                                    .push(torrent);
+                            }
+                            Err(error) => {
+                                warn!(
+                                    torrent_id = %torrent.id,
+                                    %error,
+                                    "failed to resolve movie title for generic search; using fallback"
+                                );
                                 let fallback = self.default_torrent_title(&torrent.id);
                                 grouped_torrents
                                     .entry((fallback, self.movie_category_ids()))
@@ -469,7 +492,7 @@ impl SearchService {
     }
 
     pub async fn resolve_feed_title(&self, tvdb_id: i64, season: u32) -> Result<String, ServiceError> {
-        debug!(tvdb_id, season, "resolving title from sonarr");
+        trace!(tvdb_id, season, "resolving title from sonarr");
         let sonarr = self
             .sonarr
             .as_ref()
@@ -478,7 +501,7 @@ impl SearchService {
             .resolve_name(tvdb_id)
             .await
             .map_err(ServiceError::Sonarr)?;
-        debug!(tvdb_id, %series_title, "resolved series title from sonarr");
+        trace!(tvdb_id, %series_title, "resolved series title from sonarr");
         Ok(format!("{series_title} S{season:02} Bluray 1080p remux"))
     }
 
@@ -523,7 +546,7 @@ impl SearchService {
             .into_iter()
             .filter(|torrent| {
                 if self.config.skip_deband && torrent.tags.contains(&"Deband Required".to_string()) {
-                    debug!(torrent_id = %torrent.id, "skipping torrent due to Deband Required tag");
+                    trace!(torrent_id = %torrent.id, "skipping torrent due to Deband Required tag");
                     return false;
                 }
                 true

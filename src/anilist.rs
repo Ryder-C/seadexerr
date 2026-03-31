@@ -3,7 +3,7 @@ use std::{collections::HashMap, time::Duration};
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tracing::debug;
+use tracing::trace;
 
 const MAX_IDS_PER_REQUEST: usize = 50;
 
@@ -95,7 +95,7 @@ impl AniListClient {
                 });
             }
 
-            debug!(ids = chunk.len(), matches, "fetched AniList media batch");
+            trace!(ids = chunk.len(), matches, "fetched AniList media batch");
         }
 
         Ok(result)

@@ -12,7 +12,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 use thiserror::Error;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::service::ServiceError;
 use crate::torznab::{self, ChannelMetadata, TorznabItem};
@@ -156,8 +156,12 @@ async fn torznab_handler(
     let metadata = build_channel_metadata(&state)?;
 
     match operation {
-        TorznabOperation::Caps => Ok(TorznabResponse::caps(metadata)),
+        TorznabOperation::Caps => {
+            info!("serving torznab capabilities");
+            Ok(TorznabResponse::caps(metadata))
+        }
         TorznabOperation::Search => {
+            info!(query = ?query.query, "handling generic search");
             let (items, total) = state.service.search_generic(query.query, query.cat, query.limit, query.offset).await?;
             Ok(TorznabResponse::new(metadata, items, query.offset.unwrap_or(0), total))
         }
@@ -166,6 +170,7 @@ async fn torznab_handler(
             let season = query.season_number();
             
             if let (Some(tvdb_id), Some(season)) = (tvdb_id, season) {
+                info!(tvdb_id, season, "handling tv search");
                 let (items, total) = state.service.search_tv(tvdb_id, season, query.limit, query.offset).await?;
                 Ok(TorznabResponse::new(metadata, items, query.offset.unwrap_or(0), total))
             } else {
@@ -175,6 +180,7 @@ async fn torznab_handler(
         }
         TorznabOperation::MovieSearch => {
             if let Some(tmdb_id) = query.tmdb_identifier() {
+                info!(tmdb_id, "handling movie search");
                 let (items, total) = state.service.search_movie(tmdb_id, query.limit, query.offset).await?;
                 Ok(TorznabResponse::new(metadata, items, query.offset.unwrap_or(0), total))
             } else {

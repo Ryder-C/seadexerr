@@ -51,8 +51,8 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to construct releases.moe client")?;
 
     let anilist_url = Url::parse(ANILIST_BASE_URL).context("invalid ANILIST_BASE_URL")?;
-    let anilist = AniListClient::new(anilist_url, TIMEOUT)
-        .context("failed to construct AniList client")?;
+    let anilist =
+        AniListClient::new(anilist_url, TIMEOUT).context("failed to construct AniList client")?;
 
     let data_path = get_data_path();
 
@@ -86,7 +86,8 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    let mapping_source_url = Url::parse(MAPPING_SOURCE_URL).context("invalid MAPPING_SOURCE_URL")?;
+    let mapping_source_url =
+        Url::parse(MAPPING_SOURCE_URL).context("invalid MAPPING_SOURCE_URL")?;
     let mappings = PlexAniBridgeMappings::bootstrap(
         data_path,
         mapping_source_url,

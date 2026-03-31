@@ -5,7 +5,7 @@ use reqwest::{Client, Url};
 use serde::Deserialize;
 use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
-use tracing::debug;
+use tracing::trace;
 
 #[derive(Debug, Clone)]
 pub struct ReleasesClient {
@@ -42,7 +42,7 @@ impl ReleasesClient {
             })
             .await?;
 
-        debug!(
+        trace!(
             anilist_id,
             limit,
             items = payload.items.len(),
@@ -54,7 +54,7 @@ impl ReleasesClient {
             .take(limit)
             .collect();
 
-        debug!(
+        trace!(
             anilist_id,
             total = torrents.len(),
             "constructed torrent results from releases.moe entries"
@@ -76,7 +76,7 @@ impl ReleasesClient {
 
         let torrents = Self::entries_to_torrents(payload.items);
 
-        debug!(
+        trace!(
             feed = "recent-public",
             limit,
             returned = torrents.len(),
