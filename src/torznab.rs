@@ -37,9 +37,6 @@ pub struct TorznabSubCategory {
     pub name: &'static str,
 }
 
-const TAG: &str = "freeleech25";
-const DESC: &str = "Description";
-
 pub const ANIME_CATEGORY: TorznabCategory = TorznabCategory {
     id: 5000,
     name: "TV",
@@ -138,15 +135,6 @@ pub fn render_caps(metadata: &ChannelMetadata) -> Result<String, TorznabBuildErr
     }
     writer.write_event(Event::End(BytesEnd::new("categories")))?;
 
-    writer.write_event(Event::Start(BytesStart::new("tags")))?;
-    {
-        let mut tag_el = BytesStart::new("tag");
-        tag_el.push_attribute(("name", TAG));
-        tag_el.push_attribute(("description", DESC));
-        writer.write_event(Event::Empty(tag_el))?;
-    }
-    writer.write_event(Event::End(BytesEnd::new("tags")))?;
-
     writer.write_event(Event::End(BytesEnd::new("caps")))?;
 
     Ok(String::from_utf8(writer.into_inner())?)
@@ -210,7 +198,7 @@ pub fn render_feed(
         }
         write_attr(&mut writer, "seeders", &item.seeders.to_string())?;
         write_attr(&mut writer, "leechers", &item.leechers.to_string())?;
-        write_attr(&mut writer, "tag", TAG)?;
+        write_attr(&mut writer, "downloadvolumefactor", "0.75")?;
 
         writer.write_event(Event::End(BytesEnd::new("item")))?;
     }
