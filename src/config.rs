@@ -5,8 +5,7 @@ use reqwest::Url;
 
 pub const RELEASES_BASE_URL: &str = "https://releases.moe/api/";
 pub const ANILIST_BASE_URL: &str = "https://graphql.anilist.co";
-pub const MAPPING_SOURCE_URL: &str =
-    "https://raw.githubusercontent.com/eliasbenb/PlexAniBridge-Mappings/refs/heads/v2/mappings.json";
+pub const MAPPING_SOURCE_URL: &str = "https://raw.githubusercontent.com/eliasbenb/PlexAniBridge-Mappings/refs/heads/v2/mappings.json";
 pub const MAPPING_REFRESH_INTERVAL: Duration = Duration::from_secs(21_600); // 6 hours
 pub const APPLICATION_TITLE: &str = "Seadexerr";
 pub const APPLICATION_DESCRIPTION: &str = "Indexer bridge for releases.moe";
@@ -20,6 +19,8 @@ pub struct AppConfig {
     pub public_base_url: Option<Url>,
     pub sonarr: Option<SonarrConfig>,
     pub radarr: Option<RadarrConfig>,
+    pub skip_deband: bool,
+    pub prefer_dual_audio: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -70,6 +71,13 @@ impl AppConfig {
             }
             _ => None,
         };
+        let skip_deband = env::var("SEADEXER_SKIP_DEBAND")
+            .map(|v| v != "false")
+            .unwrap_or(false);
+
+        let prefer_dual_audio = env::var("SEADEXER_PREFER_DUAL_AUDIO")
+            .map(|v| v != "false")
+            .unwrap_or(false);
 
         let radarr = match env::var("RADARR_API_KEY") {
             Ok(api_key) if !api_key.trim().is_empty() => {
@@ -86,7 +94,9 @@ impl AppConfig {
         };
 
         if sonarr.is_none() && radarr.is_none() {
-            anyhow::bail!("At least one of Sonarr or Radarr must be configured via its API key (SONARR_API_KEY or RADARR_API_KEY)");
+            anyhow::bail!(
+                "At least one of Sonarr or Radarr must be configured via its API key (SONARR_API_KEY or RADARR_API_KEY)"
+            );
         }
 
         Ok(Self {
@@ -94,6 +104,8 @@ impl AppConfig {
             public_base_url,
             sonarr,
             radarr,
+            skip_deband,
+            prefer_dual_audio,
         })
     }
 }

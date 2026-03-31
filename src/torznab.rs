@@ -120,7 +120,7 @@ pub fn render_caps(metadata: &ChannelMetadata) -> Result<String, TorznabBuildErr
         category_el.push_attribute(("id", id_attr.as_str()));
         category_el.push_attribute(("name", category.name));
 
-        if category.subcategories.len() > 0 {
+        if !category.subcategories.is_empty() {
             writer.write_event(Event::Start(category_el))?;
 
             for sub in category.subcategories {

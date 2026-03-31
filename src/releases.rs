@@ -234,6 +234,8 @@ pub struct Torrent {
     pub files: Vec<TorrentFile>,
     pub size_bytes: u64,
     pub is_best: bool,
+    pub dual_audio: bool,
+    pub tags: Vec<String>,
     pub anilist_id: Option<i64>,
 }
 
@@ -255,6 +257,8 @@ impl Torrent {
             files: record.files,
             size_bytes,
             is_best: record.is_best,
+            dual_audio: record.dual_audio,
+            tags: record.tags,
             anilist_id,
             source_url,
         }
@@ -272,6 +276,8 @@ struct TorrentRecord {
     updated: Option<String>,
     #[serde(rename = "isBest")]
     is_best: bool,
+    #[serde(rename = "dualAudio", default)]
+    dual_audio: bool,
     tags: Vec<String>,
     #[serde(default)]
     tracker: String,
