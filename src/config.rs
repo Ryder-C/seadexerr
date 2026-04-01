@@ -37,12 +37,8 @@ pub struct RadarrConfig {
 
 impl AppConfig {
     pub fn from_env() -> Result<Self> {
-        let host = env::var("SEADEXERR_HOST")
-            .or_else(|_| env::var("SEADEXER_HOST"))
-            .unwrap_or_else(|_| "0.0.0.0".to_string());
-        let port = env::var("SEADEXERR_PORT")
-            .or_else(|_| env::var("SEADEXER_PORT"))
-            .unwrap_or_else(|_| "6767".to_string());
+        let host = env::var("SEADEXERR_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
+        let port = env::var("SEADEXERR_PORT").unwrap_or_else(|_| "6767".to_string());
         let port = port
             .parse::<u16>()
             .context("SEADEXERR_PORT must be a valid u16 integer")?;
@@ -51,7 +47,6 @@ impl AppConfig {
             .context("failed to parse socket address from SEADEXERR_HOST and SEADEXERR_PORT")?;
 
         let public_base_url = env::var("SEADEXERR_PUBLIC_BASE_URL")
-            .or_else(|_| env::var("SEADEXER_PUBLIC_BASE_URL"))
             .ok()
             .map(|value| {
                 Url::parse(&value).context("SEADEXERR_PUBLIC_BASE_URL must be a valid URL")
@@ -71,11 +66,11 @@ impl AppConfig {
             }
             _ => None,
         };
-        let skip_deband = env::var("SEADEXER_SKIP_DEBAND")
+        let skip_deband = env::var("SEADEXERR_SKIP_DEBAND")
             .map(|v| v != "false")
             .unwrap_or(false);
 
-        let prefer_dual_audio = env::var("SEADEXER_PREFER_DUAL_AUDIO")
+        let prefer_dual_audio = env::var("SEADEXERR_PREFER_DUAL_AUDIO")
             .map(|v| v != "false")
             .unwrap_or(false);
 
