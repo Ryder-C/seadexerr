@@ -357,14 +357,18 @@ impl SearchService {
                     )
                     .await
                     {
-                        Ok(title) => title,
+                        Ok(Some(title)) => title,
+                        Ok(None) => {
+                            debug!(torrent_id = %torrent.id, "no tv title resolved for generic search; skipping");
+                            continue;
+                        }
                         Err(error) => {
                             warn!(
                                 torrent_id = %torrent.id,
                                 %error,
-                                "failed to resolve tv title for generic search; using fallback"
+                                "failed to resolve tv title for generic search; skipping"
                             );
-                            self.default_torrent_title(&torrent.id)
+                            continue;
                         }
                     };
                     grouped_torrents
@@ -387,23 +391,14 @@ impl SearchService {
                                 .push(torrent);
                         }
                         Ok(None) => {
-                            let fallback = self.default_torrent_title(&torrent.id);
-                            grouped_torrents
-                                .entry((fallback, self.movie_category_ids()))
-                                .or_default()
-                                .push(torrent);
+                            debug!(torrent_id = %torrent.id, "no movie title resolved for generic search; skipping");
                         }
                         Err(error) => {
                             warn!(
                                 torrent_id = %torrent.id,
                                 %error,
-                                "failed to resolve movie title for generic search; using fallback"
+                                "failed to resolve movie title for generic search; skipping"
                             );
-                            let fallback = self.default_torrent_title(&torrent.id);
-                            grouped_torrents
-                                .entry((fallback, self.movie_category_ids()))
-                                .or_default()
-                                .push(torrent);
                         }
                     }
                 }
@@ -437,9 +432,9 @@ impl SearchService {
         torrent: &Torrent,
         cache: &mut HashMap<(i64, u32), String>,
         active_tvdb_ids: &mut HashSet<i64>,
-    ) -> Result<String, ServiceError> {
+    ) -> Result<Option<String>, ServiceError> {
         let Some(anilist_id) = torrent.anilist_id else {
-            return Ok(self.default_torrent_title(&torrent.id));
+            return Ok(None);
         };
 
         let mappings = self
@@ -449,22 +444,22 @@ impl SearchService {
             .map_err(ServiceError::Mapping)?;
 
         if mappings.is_empty() {
-            return Ok(self.default_torrent_title(&torrent.id));
+            return Ok(None);
         }
 
         if let Some((tvdb_id, season)) = self.select_tvdb_and_season(&mappings) {
             active_tvdb_ids.insert(tvdb_id);
 
             if let Some(existing) = cache.get(&(tvdb_id, season)) {
-                return Ok(existing.clone());
+                return Ok(Some(existing.clone()));
             }
 
             let title = self.resolve_feed_title(tvdb_id, season).await?;
             cache.insert((tvdb_id, season), title.clone());
-            return Ok(title);
+            return Ok(Some(title));
         }
 
-        Ok(self.default_torrent_title(&torrent.id))
+        Ok(None)
     }
 
     pub async fn resolve_movie_generic_title(
@@ -655,10 +650,6 @@ impl SearchService {
         }
 
         best
-    }
-
-    fn default_torrent_title(&self, id: &str) -> String {
-        format!("Torrent {id}")
     }
 
     fn category_filter_matches(&self, cat_param: &Option<String>) -> bool {
