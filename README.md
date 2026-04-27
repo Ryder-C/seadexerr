@@ -59,15 +59,6 @@ In Sonarr or Radarr:
 6. Go to **Settings → Profiles**
 7. Click on your profile and give a high score to Seadex (Ex: 5000)
 
-## Future Plans
-
-- [ ] Specials Support
-- [ ] Episode Support
-- [x] Movie Support (TMDB + Radarr)
-- [x] RSS Refresh
-- [x] Local PlexAniBridge Mappings
-- [x] Season Pack Support
-
-This project uses [PlexAniBridge Mappings](https://github.com/eliasbenb/PlexAniBridge-Mappings).
+This project uses [AniBridge Mappings](https://github.com/anibridge/anibridge-mappings).
 
 Contributions and feature suggestions are welcome. Open an issue or submit a pull request to get involved.

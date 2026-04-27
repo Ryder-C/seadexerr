@@ -8,7 +8,7 @@ use crate::releases::{ReleasesClient, ReleasesError, Torrent};
 use crate::sonarr::{SonarrClient, SonarrError};
 use crate::torznab::{self, TorznabItem, ANIME_CATEGORY, MOVIE_CATEGORY};
 use thiserror::Error;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 #[derive(Debug, Error)]
 pub enum ServiceError {
@@ -81,7 +81,7 @@ impl SearchService {
         {
             Some(id) => id,
             None => {
-                debug!(tvdb_id, season, "no anilist mapping found; returning empty result set");
+                info!(tvdb_id, season, "no anilist mapping found; returning empty result set");
                 return Ok((Vec::new(), 0));
             }
         };
@@ -94,6 +94,11 @@ impl SearchService {
             .search_torrents(anilist_id, fetch_limit)
             .await
             .map_err(ServiceError::Releases)?;
+
+        if collected.is_empty() {
+            info!(tvdb_id, season, anilist_id, "no releases found on releases.moe; returning empty result set");
+            return Ok((Vec::new(), 0));
+        }
 
         let media_lookup = self
             .anilist
@@ -118,7 +123,14 @@ impl SearchService {
         }
 
         let total = collected.len();
-        let feed_title = self.resolve_feed_title(tvdb_id, season).await?;
+        let feed_title = match self.resolve_feed_title(tvdb_id, season).await {
+            Ok(title) => title,
+            Err(ServiceError::Sonarr(SonarrError::Api { .. } | SonarrError::NotFound { .. })) => {
+                debug!(tvdb_id, season, "Sonarr series lookup failed; returning empty result set");
+                return Ok((Vec::new(), 0));
+            }
+            Err(err) => return Err(err),
+        };
 
         let torrents: Vec<Torrent> = collected
             .into_iter()
@@ -155,7 +167,7 @@ impl SearchService {
         {
             Some(id) => id,
             None => {
-                debug!(tmdb_id, "no anilist mapping found for movie-search; returning empty result set");
+                info!(tmdb_id, "no anilist mapping found for movie-search; returning empty result set");
                 return Ok((Vec::new(), 0));
             }
         };
@@ -168,6 +180,11 @@ impl SearchService {
             .search_torrents(anilist_id, fetch_limit)
             .await
             .map_err(ServiceError::Releases)?;
+
+        if collected.is_empty() {
+            info!(tmdb_id, anilist_id, "no releases found on releases.moe; returning empty result set");
+            return Ok((Vec::new(), 0));
+        }
 
         let media_lookup = self
             .anilist
@@ -332,65 +349,61 @@ impl SearchService {
             };
 
             match &media.format {
-                format if self.format_allowed(format) => {
-                    if self.sonarr.is_some() {
-                        let title = match self.resolve_tv_generic_title(
-                            &torrent,
-                            &mut tv_title_cache,
-                            &mut active_tvdb_ids,
-                        )
-                        .await
-                        {
-                            Ok(title) => title,
-                            Err(error) => {
-                                warn!(
-                                    torrent_id = %torrent.id,
-                                    %error,
-                                    "failed to resolve tv title for generic search; using fallback"
-                                );
-                                self.default_torrent_title(&torrent.id)
-                            }
-                        };
-                        grouped_torrents
-                            .entry((title, self.tv_category_ids()))
-                            .or_default()
-                            .push(torrent);
-                    }
+                format if self.format_allowed(format) && self.sonarr.is_some() => {
+                    let title = match self.resolve_tv_generic_title(
+                        &torrent,
+                        &mut tv_title_cache,
+                        &mut active_tvdb_ids,
+                    )
+                    .await
+                    {
+                        Ok(title) => title,
+                        Err(error) => {
+                            warn!(
+                                torrent_id = %torrent.id,
+                                %error,
+                                "failed to resolve tv title for generic search; using fallback"
+                            );
+                            self.default_torrent_title(&torrent.id)
+                        }
+                    };
+                    grouped_torrents
+                        .entry((title, self.tv_category_ids()))
+                        .or_default()
+                        .push(torrent);
                 }
-                MediaFormat::Movie => {
-                    if self.radarr.is_some() {
-                        match self.resolve_movie_generic_title(
-                            anilist_id,
-                            &mut movie_title_cache,
-                            &mut active_tmdb_ids,
-                        )
-                        .await
-                        {
-                            Ok(Some(title)) => {
-                                grouped_torrents
-                                    .entry((title, self.movie_category_ids()))
-                                    .or_default()
-                                    .push(torrent);
-                            }
-                            Ok(None) => {
-                                let fallback = self.default_torrent_title(&torrent.id);
-                                grouped_torrents
-                                    .entry((fallback, self.movie_category_ids()))
-                                    .or_default()
-                                    .push(torrent);
-                            }
-                            Err(error) => {
-                                warn!(
-                                    torrent_id = %torrent.id,
-                                    %error,
-                                    "failed to resolve movie title for generic search; using fallback"
-                                );
-                                let fallback = self.default_torrent_title(&torrent.id);
-                                grouped_torrents
-                                    .entry((fallback, self.movie_category_ids()))
-                                    .or_default()
-                                    .push(torrent);
-                            }
+                MediaFormat::Movie if self.radarr.is_some() => {
+                    match self.resolve_movie_generic_title(
+                        anilist_id,
+                        &mut movie_title_cache,
+                        &mut active_tmdb_ids,
+                    )
+                    .await
+                    {
+                        Ok(Some(title)) => {
+                            grouped_torrents
+                                .entry((title, self.movie_category_ids()))
+                                .or_default()
+                                .push(torrent);
+                        }
+                        Ok(None) => {
+                            let fallback = self.default_torrent_title(&torrent.id);
+                            grouped_torrents
+                                .entry((fallback, self.movie_category_ids()))
+                                .or_default()
+                                .push(torrent);
+                        }
+                        Err(error) => {
+                            warn!(
+                                torrent_id = %torrent.id,
+                                %error,
+                                "failed to resolve movie title for generic search; using fallback"
+                            );
+                            let fallback = self.default_torrent_title(&torrent.id);
+                            grouped_torrents
+                                .entry((fallback, self.movie_category_ids()))
+                                .or_default()
+                                .push(torrent);
                         }
                     }
                 }

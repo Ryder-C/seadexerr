@@ -11,7 +11,7 @@ use serde::Deserialize;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tokio::task;
-use tracing::trace;
+use tracing::{trace, warn};
 use url::Url;
 
 #[derive(Debug, Clone)]
@@ -73,8 +73,23 @@ impl SonarrClient {
             .get(url)
             .header("X-Api-Key", &self.api_key)
             .send()
-            .await?
-            .error_for_status()?;
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            warn!(
+                tvdb_id,
+                status = status.as_u16(),
+                body = %body,
+                "Sonarr series lookup returned non-success status"
+            );
+            return Err(SonarrError::Api {
+                tvdb_id,
+                status: status.as_u16(),
+                body,
+            });
+        }
 
         let payload: Vec<SeriesLookupEntry> = response.json().await?;
 
@@ -139,17 +154,19 @@ impl SonarrClient {
 
         let path = self.cache_path.clone();
 
-        let result = task::spawn_blocking(move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-            let json = serde_json::to_vec_pretty(&snapshot)?;
+        let result = task::spawn_blocking(
+            move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                let json = serde_json::to_vec_pretty(&snapshot)?;
 
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
 
-            std::fs::write(&path, json)?;
+                std::fs::write(&path, json)?;
 
-            Ok(())
-        })
+                Ok(())
+            },
+        )
         .await
         .map_err(|source| SonarrError::CacheWrite {
             source: std::io::Error::other(format!("join error: {source}")),
@@ -213,6 +230,12 @@ pub enum SonarrError {
     Url(#[from] url::ParseError),
     #[error("http error when querying Sonarr api")]
     Http(#[from] reqwest::Error),
+    #[error("Sonarr api returned {status} for tvdb {tvdb_id}: {body}")]
+    Api {
+        tvdb_id: i64,
+        status: u16,
+        body: String,
+    },
     #[error("no Sonarr series title found for tvdb {tvdb_id}")]
     NotFound { tvdb_id: i64 },
     #[error("failed to read cached Sonarr titles at {path}")]

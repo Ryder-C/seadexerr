@@ -9,7 +9,6 @@ use reqwest::{
     Client, StatusCode,
     header::{ETAG, IF_NONE_MATCH},
 };
-use serde::Deserialize;
 use thiserror::Error;
 use tokio::fs;
 use tokio::task;
@@ -59,31 +58,6 @@ pub struct TvdbMapping {
     pub seasons: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct RawMappingRecord {
-    #[serde(default)]
-    tvdb_id: Option<i64>,
-    #[serde(default)]
-    tmdb_movie_id: Option<TmdbMovieId>,
-    #[serde(default)]
-    tvdb_mappings: HashMap<String, serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum TmdbMovieId {
-    Single(i64),
-    Multiple(Vec<i64>),
-}
-
-impl TmdbMovieId {
-    fn into_first(self) -> Option<i64> {
-        match self {
-            TmdbMovieId::Single(id) => Some(id),
-            TmdbMovieId::Multiple(ids) => ids.into_iter().next(),
-        }
-    }
-}
 
 impl PlexAniBridgeMappings {
     pub async fn bootstrap(
@@ -117,10 +91,18 @@ impl PlexAniBridgeMappings {
             refresh_interval,
         };
 
-        mappings
-            .refresh_mappings()
-            .await
-            .map_err(anyhow::Error::from)?;
+        if let Err(err) = mappings.refresh_mappings().await {
+            warn!(
+                error = %err,
+                url = %mappings.source_url,
+                "failed to download mappings on startup; attempting to load from disk cache"
+            );
+            mappings
+                .load_mappings()
+                .await
+                .map_err(|_| anyhow::Error::from(err))
+                .context("failed to download mappings and no disk cache available")?;
+        }
         mappings.spawn_refresh_task();
 
         Ok(mappings)
@@ -232,7 +214,7 @@ impl PlexAniBridgeMappings {
         let index = {
             let bytes = bytes.clone();
             task::spawn_blocking(move || {
-                let raw: HashMap<String, RawMappingRecord> = serde_json::from_slice(&bytes)?;
+                let raw: HashMap<String, serde_json::Value> = serde_json::from_slice(&bytes)?;
                 Ok::<MappingIndex, MappingError>(Self::build_index(raw))
             })
             .await??
@@ -392,7 +374,7 @@ impl PlexAniBridgeMappings {
             })?;
 
         let index = task::spawn_blocking(move || {
-            let raw: HashMap<String, RawMappingRecord> = serde_json::from_slice(&contents)?;
+            let raw: HashMap<String, serde_json::Value> = serde_json::from_slice(&contents)?;
             Ok::<MappingIndex, MappingError>(Self::build_index(raw))
         })
         .await??;
@@ -429,46 +411,57 @@ impl PlexAniBridgeMappings {
         path
     }
 
-    fn build_index(raw: HashMap<String, RawMappingRecord>) -> MappingIndex {
+    fn build_index(raw: HashMap<String, serde_json::Value>) -> MappingIndex {
         let mut tvdb_index: HashMap<i64, Vec<MappingEntry>> = HashMap::new();
         let mut anilist_index: HashMap<i64, Vec<ReverseMappingEntry>> = HashMap::new();
         let mut tmdb_index: HashMap<i64, i64> = HashMap::new();
         let mut anilist_tmdb: HashMap<i64, i64> = HashMap::new();
 
-        for (anilist_id_str, record) in raw {
-            let Ok(anilist_id) = anilist_id_str.parse::<i64>() else {
-                debug!(
-                    anilist_id = %anilist_id_str,
-                    "skipping mapping with non-numeric anilist id"
-                );
+        for (source_key, targets_value) in raw {
+            if source_key.starts_with('$') {
+                continue;
+            }
+
+            let Some(("anilist", id_str, _scope)) = parse_descriptor(&source_key) else {
                 continue;
             };
 
-            let RawMappingRecord {
-                tvdb_id,
-                tmdb_movie_id,
-                tvdb_mappings,
-            } = record;
+            let Ok(anilist_id) = id_str.parse::<i64>() else {
+                debug!(source_key, "skipping mapping with non-numeric anilist id");
+                continue;
+            };
 
-            if let Some(tvdb_id) = tvdb_id {
-                if tvdb_mappings.is_empty() {
-                    trace!(anilist_id, tvdb_id, "skipping mapping with no season data");
-                } else {
-                    let seasons = tvdb_mappings.into_keys().collect::<Vec<_>>();
+            let Some(targets) = targets_value.as_object() else {
+                continue;
+            };
+
+            for target_key in targets.keys() {
+                let Some((target_provider, target_id_str, target_scope)) =
+                    parse_descriptor(target_key)
+                else {
+                    continue;
+                };
+
+                if target_provider == "tvdb_show" {
+                    let Ok(tvdb_id) = target_id_str.parse::<i64>() else {
+                        continue;
+                    };
+                    let season = target_scope.unwrap_or("s1").to_owned();
                     tvdb_index.entry(tvdb_id).or_default().push(MappingEntry {
                         anilist_id,
-                        seasons: seasons.clone(),
+                        seasons: vec![season.clone()],
                     });
                     anilist_index
                         .entry(anilist_id)
                         .or_default()
-                        .push(ReverseMappingEntry { tvdb_id, seasons });
+                        .push(ReverseMappingEntry { tvdb_id, seasons: vec![season] });
+                } else if target_provider == "tmdb_movie" {
+                    let Ok(tmdb_id) = target_id_str.parse::<i64>() else {
+                        continue;
+                    };
+                    tmdb_index.insert(tmdb_id, anilist_id);
+                    anilist_tmdb.insert(anilist_id, tmdb_id);
                 }
-            }
-
-            if let Some(tmdb_id) = tmdb_movie_id.and_then(|value| value.into_first()) {
-                tmdb_index.insert(tmdb_id, anilist_id);
-                anilist_tmdb.insert(anilist_id, tmdb_id);
             }
         }
 
@@ -603,6 +596,14 @@ impl PlexAniBridgeMappings {
 
         Ok(result)
     }
+}
+
+fn parse_descriptor(key: &str) -> Option<(&str, &str, Option<&str>)> {
+    let mut parts = key.splitn(3, ':');
+    let provider = parts.next()?;
+    let id = parts.next()?;
+    let scope = parts.next();
+    Some((provider, id, scope))
 }
 
 pub(crate) fn parse_season_key(key: &str) -> Option<u32> {

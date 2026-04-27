@@ -161,7 +161,6 @@ async fn torznab_handler(
             Ok(TorznabResponse::caps(metadata))
         }
         TorznabOperation::Search => {
-            info!(query = ?query.query, "handling generic search");
             let (items, total) = state.service.search_generic(query.query, query.cat, query.limit, query.offset).await?;
             Ok(TorznabResponse::new(metadata, items, query.offset.unwrap_or(0), total))
         }
