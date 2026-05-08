@@ -4,7 +4,7 @@ use crate::anilist::{AniListClient, AniListError, MediaFormat};
 use crate::config::{self, AppConfig};
 use crate::mapping::{MappingError, PlexAniBridgeMappings, TvdbMapping, parse_season_key};
 use crate::radarr::{RadarrClient, RadarrError};
-use crate::releases::{ReleasesClient, ReleasesError, Torrent};
+use crate::releases::{self, ReleasesClient, ReleasesError, Torrent};
 use crate::sonarr::{SonarrClient, SonarrError};
 use crate::torznab::{self, ANIME_CATEGORY, MOVIE_CATEGORY, TorznabItem};
 use thiserror::Error;
@@ -586,9 +586,13 @@ impl SearchService {
         let filtered: Vec<Torrent> = torrents
             .into_iter()
             .filter(|torrent| {
-                if self.config.skip_deband && torrent.tags.contains(&"Deband Required".to_string())
+                if self.config.skip_deband
+                    && torrent
+                        .tags
+                        .iter()
+                        .any(|tag| releases::DEBAND_TAGS.contains(&tag.as_str()))
                 {
-                    trace!(torrent_id = %torrent.id, "skipping torrent due to Deband Required tag");
+                    trace!(torrent_id = %torrent.id, "skipping torrent due to Deband tag");
                     return false;
                 }
                 true
