@@ -80,10 +80,14 @@ impl RadarrClient {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            let is_not_found = status == reqwest::StatusCode::NOT_FOUND
-                || body.contains("was not found");
+            let is_not_found =
+                status == reqwest::StatusCode::NOT_FOUND || body.contains("was not found");
             if is_not_found {
-                trace!(tmdb_id, status = status.as_u16(), "Radarr movie not found on TMDb");
+                trace!(
+                    tmdb_id,
+                    status = status.as_u16(),
+                    "Radarr movie not found on TMDb"
+                );
                 return Err(RadarrError::NotFound { tmdb_id });
             }
             tracing::warn!(
@@ -110,10 +114,7 @@ impl RadarrClient {
             return Err(RadarrError::NotFound { tmdb_id });
         };
 
-        let movie = RadarrMovie {
-            title,
-            year,
-        };
+        let movie = RadarrMovie { title, year };
 
         self.store_movie(tmdb_id, &movie).await?;
 
@@ -165,17 +166,19 @@ impl RadarrClient {
 
         let path = self.cache_path.clone();
 
-        let result = task::spawn_blocking(move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-            let json = serde_json::to_vec_pretty(&snapshot)?;
+        let result = task::spawn_blocking(
+            move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                let json = serde_json::to_vec_pretty(&snapshot)?;
 
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
 
-            std::fs::write(&path, json)?;
+                std::fs::write(&path, json)?;
 
-            Ok(())
-        })
+                Ok(())
+            },
+        )
         .await
         .map_err(|source| RadarrError::CacheWrite {
             source: std::io::Error::other(format!("join error: {source}")),

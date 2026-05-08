@@ -7,6 +7,8 @@ use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tracing::trace;
 
+pub const DEBAND_TAGS: &[&str] = &["Deband Required", "Deband Recommended"];
+
 #[derive(Debug, Clone)]
 pub struct ReleasesClient {
     http: Client,

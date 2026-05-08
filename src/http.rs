@@ -1,6 +1,4 @@
-use std::{
-    borrow::Cow,
-};
+use std::borrow::Cow;
 
 use axum::{
     Json, Router,
@@ -38,7 +36,12 @@ pub struct TorznabResponse {
 }
 
 impl TorznabResponse {
-    pub fn new(metadata: ChannelMetadata, items: Vec<TorznabItem>, offset: usize, total: usize) -> Self {
+    pub fn new(
+        metadata: ChannelMetadata,
+        items: Vec<TorznabItem>,
+        offset: usize,
+        total: usize,
+    ) -> Self {
         Self {
             metadata,
             items,
@@ -161,17 +164,33 @@ async fn torznab_handler(
             Ok(TorznabResponse::caps(metadata))
         }
         TorznabOperation::Search => {
-            let (items, total) = state.service.search_generic(query.query, query.cat, query.limit, query.offset).await?;
-            Ok(TorznabResponse::new(metadata, items, query.offset.unwrap_or(0), total))
+            let (items, total) = state
+                .service
+                .search_generic(query.query, query.cat, query.limit, query.offset)
+                .await?;
+            Ok(TorznabResponse::new(
+                metadata,
+                items,
+                query.offset.unwrap_or(0),
+                total,
+            ))
         }
         TorznabOperation::TvSearch => {
             let tvdb_id = query.tvdb_identifier();
             let season = query.season_number();
-            
+
             if let (Some(tvdb_id), Some(season)) = (tvdb_id, season) {
                 info!(tvdb_id, season, "handling tv search");
-                let (items, total) = state.service.search_tv(tvdb_id, season, query.limit, query.offset).await?;
-                Ok(TorznabResponse::new(metadata, items, query.offset.unwrap_or(0), total))
+                let (items, total) = state
+                    .service
+                    .search_tv(tvdb_id, season, query.limit, query.offset)
+                    .await?;
+                Ok(TorznabResponse::new(
+                    metadata,
+                    items,
+                    query.offset.unwrap_or(0),
+                    total,
+                ))
             } else {
                 debug!("tvsearch missing tvdbid or season; returning empty feed");
                 Ok(TorznabResponse::empty(metadata, query.offset.unwrap_or(0)))
@@ -180,8 +199,16 @@ async fn torznab_handler(
         TorznabOperation::MovieSearch => {
             if let Some(tmdb_id) = query.tmdb_identifier() {
                 info!(tmdb_id, "handling movie search");
-                let (items, total) = state.service.search_movie(tmdb_id, query.limit, query.offset).await?;
-                Ok(TorznabResponse::new(metadata, items, query.offset.unwrap_or(0), total))
+                let (items, total) = state
+                    .service
+                    .search_movie(tmdb_id, query.limit, query.offset)
+                    .await?;
+                Ok(TorznabResponse::new(
+                    metadata,
+                    items,
+                    query.offset.unwrap_or(0),
+                    total,
+                ))
             } else {
                 debug!("movie-search missing tmdbid; returning empty feed");
                 Ok(TorznabResponse::empty(metadata, query.offset.unwrap_or(0)))
@@ -242,8 +269,12 @@ impl IntoResponse for HttpError {
                     StatusCode::BAD_GATEWAY,
                     Cow::from("Failed to query AniList"),
                 ),
-                ServiceError::Sonarr(_) => (StatusCode::BAD_GATEWAY, Cow::from("Failed to query Sonarr")),
-                ServiceError::Radarr(_) => (StatusCode::BAD_GATEWAY, Cow::from("Failed to query Radarr")),
+                ServiceError::Sonarr(_) => {
+                    (StatusCode::BAD_GATEWAY, Cow::from("Failed to query Sonarr"))
+                }
+                ServiceError::Radarr(_) => {
+                    (StatusCode::BAD_GATEWAY, Cow::from("Failed to query Radarr"))
+                }
                 ServiceError::Unsupported(msg) => (StatusCode::BAD_REQUEST, Cow::from(msg.clone())),
             },
             HttpError::Torznab(_) => (

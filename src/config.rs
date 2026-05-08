@@ -5,7 +5,8 @@ use reqwest::Url;
 
 pub const RELEASES_BASE_URL: &str = "https://releases.moe/api/";
 pub const ANILIST_BASE_URL: &str = "https://graphql.anilist.co";
-pub const MAPPING_SOURCE_URL: &str = "https://github.com/anibridge/anibridge-mappings/releases/latest/download/mappings.min.json";
+pub const MAPPING_SOURCE_URL: &str =
+    "https://github.com/anibridge/anibridge-mappings/releases/latest/download/mappings.min.json";
 pub const MAPPING_REFRESH_INTERVAL: Duration = Duration::from_secs(21_600); // 6 hours
 pub const APPLICATION_TITLE: &str = "Seadexerr";
 pub const APPLICATION_DESCRIPTION: &str = "Indexer bridge for releases.moe";
