@@ -11,8 +11,8 @@ use reqwest::{
 };
 use thiserror::Error;
 use tokio::fs;
-use tokio::task;
 use tokio::sync::RwLock;
+use tokio::task;
 use tracing::{debug, trace, warn};
 use url::Url;
 
@@ -57,7 +57,6 @@ pub struct TvdbMapping {
     pub tvdb_id: i64,
     pub seasons: Vec<String>,
 }
-
 
 impl PlexAniBridgeMappings {
     pub async fn bootstrap(
@@ -454,7 +453,10 @@ impl PlexAniBridgeMappings {
                     anilist_index
                         .entry(anilist_id)
                         .or_default()
-                        .push(ReverseMappingEntry { tvdb_id, seasons: vec![season] });
+                        .push(ReverseMappingEntry {
+                            tvdb_id,
+                            seasons: vec![season],
+                        });
                 } else if target_provider == "tmdb_movie" {
                     let Ok(tmdb_id) = target_id_str.parse::<i64>() else {
                         continue;

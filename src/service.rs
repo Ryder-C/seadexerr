@@ -6,7 +6,7 @@ use crate::mapping::{MappingError, PlexAniBridgeMappings, TvdbMapping, parse_sea
 use crate::radarr::{RadarrClient, RadarrError};
 use crate::releases::{ReleasesClient, ReleasesError, Torrent};
 use crate::sonarr::{SonarrClient, SonarrError};
-use crate::torznab::{self, TorznabItem, ANIME_CATEGORY, MOVIE_CATEGORY};
+use crate::torznab::{self, ANIME_CATEGORY, MOVIE_CATEGORY, TorznabItem};
 use thiserror::Error;
 use tracing::{debug, info, trace, warn};
 
@@ -81,7 +81,10 @@ impl SearchService {
         {
             Some(id) => id,
             None => {
-                info!(tvdb_id, season, "no anilist mapping found; returning empty result set");
+                info!(
+                    tvdb_id,
+                    season, "no anilist mapping found; returning empty result set"
+                );
                 return Ok((Vec::new(), 0));
             }
         };
@@ -96,7 +99,10 @@ impl SearchService {
             .map_err(ServiceError::Releases)?;
 
         if collected.is_empty() {
-            info!(tvdb_id, season, anilist_id, "no releases found on releases.moe; returning empty result set");
+            info!(
+                tvdb_id,
+                season, anilist_id, "no releases found on releases.moe; returning empty result set"
+            );
             return Ok((Vec::new(), 0));
         }
 
@@ -107,7 +113,10 @@ impl SearchService {
             .map_err(ServiceError::AniList)?;
 
         let Some(media) = media_lookup.get(&anilist_id) else {
-            debug!(tvdb_id, season, anilist_id, "AniList media missing; returning empty result set");
+            debug!(
+                tvdb_id,
+                season, anilist_id, "AniList media missing; returning empty result set"
+            );
             return Ok((Vec::new(), 0));
         };
 
@@ -126,7 +135,10 @@ impl SearchService {
         let feed_title = match self.resolve_feed_title(tvdb_id, season).await {
             Ok(title) => title,
             Err(ServiceError::Sonarr(SonarrError::Api { .. } | SonarrError::NotFound { .. })) => {
-                debug!(tvdb_id, season, "Sonarr series lookup failed; returning empty result set");
+                debug!(
+                    tvdb_id,
+                    season, "Sonarr series lookup failed; returning empty result set"
+                );
                 return Ok((Vec::new(), 0));
             }
             Err(err) => return Err(err),
@@ -167,12 +179,18 @@ impl SearchService {
         {
             Some(id) => id,
             None => {
-                info!(tmdb_id, "no anilist mapping found for movie-search; returning empty result set");
+                info!(
+                    tmdb_id,
+                    "no anilist mapping found for movie-search; returning empty result set"
+                );
                 return Ok((Vec::new(), 0));
             }
         };
 
-        trace!(tmdb_id, anilist_id, limit, "movie-search querying releases.moe");
+        trace!(
+            tmdb_id,
+            anilist_id, limit, "movie-search querying releases.moe"
+        );
 
         let fetch_limit = offset.saturating_add(limit).min(config::DEFAULT_LIMIT);
         let collected: Vec<Torrent> = self
@@ -182,7 +200,10 @@ impl SearchService {
             .map_err(ServiceError::Releases)?;
 
         if collected.is_empty() {
-            info!(tmdb_id, anilist_id, "no releases found on releases.moe; returning empty result set");
+            info!(
+                tmdb_id,
+                anilist_id, "no releases found on releases.moe; returning empty result set"
+            );
             return Ok((Vec::new(), 0));
         }
 
@@ -193,7 +214,10 @@ impl SearchService {
             .map_err(ServiceError::AniList)?;
 
         let Some(media) = media_lookup.get(&anilist_id) else {
-            debug!(tmdb_id, anilist_id, "AniList media missing for movie-search; returning empty result set");
+            debug!(
+                tmdb_id,
+                anilist_id, "AniList media missing for movie-search; returning empty result set"
+            );
             return Ok((Vec::new(), 0));
         };
 
@@ -208,16 +232,13 @@ impl SearchService {
         }
 
         let total = collected.len();
-        let feed_title = match self
-            .radarr
-            .as_ref()
-            .unwrap()
-            .resolve_name(tmdb_id)
-            .await
-        {
+        let feed_title = match self.radarr.as_ref().unwrap().resolve_name(tmdb_id).await {
             Ok(movie) => self.format_movie_feed_title(&movie.title, movie.year),
             Err(RadarrError::NotFound { .. } | RadarrError::Api { .. }) => {
-                debug!(tmdb_id, "Radarr movie lookup failed; returning empty result set");
+                debug!(
+                    tmdb_id,
+                    "Radarr movie lookup failed; returning empty result set"
+                );
                 return Ok((Vec::new(), 0));
             }
             Err(err) => return Err(ServiceError::Radarr(err)),
@@ -242,12 +263,18 @@ impl SearchService {
         let offset = offset.unwrap_or(0);
 
         if query.is_some() {
-            debug!(limit, offset, "generic search query unsupported; returning empty results");
+            debug!(
+                limit,
+                offset, "generic search query unsupported; returning empty results"
+            );
             return Ok((Vec::new(), 0));
         }
 
         if !self.category_filter_matches(&cat) {
-            debug!(limit, offset, "category filter unsupported; returning empty results");
+            debug!(
+                limit,
+                offset, "category filter unsupported; returning empty results"
+            );
             return Ok((Vec::new(), 0));
         }
 
@@ -350,12 +377,13 @@ impl SearchService {
 
             match &media.format {
                 format if self.format_allowed(format) && self.sonarr.is_some() => {
-                    let title = match self.resolve_tv_generic_title(
-                        &torrent,
-                        &mut tv_title_cache,
-                        &mut active_tvdb_ids,
-                    )
-                    .await
+                    let title = match self
+                        .resolve_tv_generic_title(
+                            &torrent,
+                            &mut tv_title_cache,
+                            &mut active_tvdb_ids,
+                        )
+                        .await
                     {
                         Ok(Some(title)) => title,
                         Ok(None) => {
@@ -377,12 +405,13 @@ impl SearchService {
                         .push(torrent);
                 }
                 MediaFormat::Movie if self.radarr.is_some() => {
-                    match self.resolve_movie_generic_title(
-                        anilist_id,
-                        &mut movie_title_cache,
-                        &mut active_tmdb_ids,
-                    )
-                    .await
+                    match self
+                        .resolve_movie_generic_title(
+                            anilist_id,
+                            &mut movie_title_cache,
+                            &mut active_tmdb_ids,
+                        )
+                        .await
                     {
                         Ok(Some(title)) => {
                             grouped_torrents
@@ -499,7 +528,11 @@ impl SearchService {
         Ok(Some(formatted))
     }
 
-    pub async fn resolve_feed_title(&self, tvdb_id: i64, season: u32) -> Result<String, ServiceError> {
+    pub async fn resolve_feed_title(
+        &self,
+        tvdb_id: i64,
+        season: u32,
+    ) -> Result<String, ServiceError> {
         trace!(tvdb_id, season, "resolving title from sonarr");
         let sonarr = self
             .sonarr
@@ -553,7 +586,8 @@ impl SearchService {
         let filtered: Vec<Torrent> = torrents
             .into_iter()
             .filter(|torrent| {
-                if self.config.skip_deband && torrent.tags.contains(&"Deband Required".to_string()) {
+                if self.config.skip_deband && torrent.tags.contains(&"Deband Required".to_string())
+                {
                     trace!(torrent_id = %torrent.id, "skipping torrent due to Deband Required tag");
                     return false;
                 }
@@ -670,7 +704,8 @@ impl SearchService {
                     }
                     if let Ok(id) = trimmed.parse::<u32>()
                         && categories.iter().any(|category| {
-                            category.id == id || category.subcategories.iter().any(|sub| sub.id == id)
+                            category.id == id
+                                || category.subcategories.iter().any(|sub| sub.id == id)
                         })
                     {
                         matches_supported = true;
