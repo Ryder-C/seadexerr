@@ -1,10 +1,12 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, str::FromStr};
 
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
+use strum::EnumString;
 use thiserror::Error;
 use tracing::trace;
 
+const ANILIST_BASE_URL: &str = "https://graphql.anilist.co";
 const MAX_IDS_PER_REQUEST: usize = 50;
 
 const MEDIA_QUERY: &str = r#"
@@ -22,17 +24,18 @@ query MediaById($idIn: [Int], $perPage: Int) {
 #[derive(Debug, Clone)]
 pub struct AniListClient {
     http: Client,
-    endpoint: Url,
+    base_url: Url,
 }
 
 impl AniListClient {
-    pub fn new(endpoint: Url, timeout: Duration) -> anyhow::Result<Self> {
+    pub fn new() -> anyhow::Result<Self> {
         let http = Client::builder()
-            .timeout(timeout)
             .user_agent(format!("seadexerr/{}", env!("CARGO_PKG_VERSION")))
             .build()?;
 
-        Ok(Self { http, endpoint })
+        let base_url = Url::parse(ANILIST_BASE_URL)?;
+
+        Ok(Self { http, base_url })
     }
 
     pub async fn fetch_media(
@@ -59,7 +62,7 @@ impl AniListClient {
 
             let response = self
                 .http
-                .post(self.endpoint.clone())
+                .post(self.base_url.clone())
                 .json(&request)
                 .send()
                 .await?
@@ -84,9 +87,11 @@ impl AniListClient {
 
             let matches = page.media.len();
             for media in page.media.into_iter() {
-                let format = match media.format.as_deref().and_then(MediaFormat::from_str) {
-                    Some(format) => format,
-                    None => continue,
+                let Some(raw) = media.format.as_deref() else {
+                    continue;
+                };
+                let Ok(format) = MediaFormat::from_str(raw) else {
+                    continue;
                 };
 
                 result.entry(media.id).or_insert(AniListMedia {
@@ -102,38 +107,21 @@ impl AniListClient {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, EnumString)]
+#[strum(serialize_all = "SCREAMING_SNAKE_CASE")]
 pub enum MediaFormat {
     Tv,
     TvShort,
+    Ona,
+
     Movie,
     Special,
     Ova,
-    Ona,
+
     Music,
     Manga,
     Novel,
     OneShot,
-}
-
-impl MediaFormat {
-    fn from_str(value: &str) -> Option<Self> {
-        match value {
-            "TV" => Some(Self::Tv),
-            "TV_SHORT" => Some(Self::TvShort),
-            "ONA" => Some(Self::Ona),
-
-            "MOVIE" => Some(Self::Movie),
-            "SPECIAL" => Some(Self::Special),
-            "OVA" => Some(Self::Ova),
-
-            "MUSIC" => Some(Self::Music),
-            "MANGA" => Some(Self::Manga),
-            "NOVEL" => Some(Self::Novel),
-            "ONE_SHOT" => Some(Self::OneShot),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

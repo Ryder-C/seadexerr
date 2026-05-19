@@ -4,26 +4,21 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use anyhow::Context;
+use anyhow::{Context, Result, bail};
 use reqwest::{
     Client, StatusCode,
     header::{ETAG, IF_NONE_MATCH},
 };
-use thiserror::Error;
 use tokio::fs;
 use tokio::sync::RwLock;
 use tokio::task;
 use tracing::{debug, trace, warn};
-use url::Url;
 
-#[derive(Debug, Clone)]
-pub struct PlexAniBridgeMappings {
-    path: PathBuf,
-    cache: Arc<RwLock<Option<CachedMappings>>>,
-    client: Client,
-    source_url: Url,
-    refresh_interval: Duration,
-}
+use crate::http;
+
+pub const SOURCE_URL: &str =
+    "https://github.com/anibridge/anibridge-mappings/releases/latest/download/mappings.min.json";
+pub const REFRESH_INTERVAL: Duration = Duration::from_hours(6);
 
 #[derive(Debug)]
 struct CachedMappings {
@@ -58,48 +53,43 @@ pub struct TvdbMapping {
     pub seasons: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PlexAniBridgeMappings {
+    path: PathBuf,
+    cache: Arc<RwLock<Option<CachedMappings>>>,
+    client: Client,
+}
+
 impl PlexAniBridgeMappings {
-    pub async fn bootstrap(
-        data_path: PathBuf,
-        source_url: Url,
-        refresh_interval: Duration,
-        timeout: Duration,
-    ) -> anyhow::Result<Self> {
-        fs::create_dir_all(&data_path).await.with_context(|| {
-            format!("failed to create data directory at {}", data_path.display())
-        })?;
+    pub async fn bootstrap(data_path: PathBuf) -> Result<Self> {
+        fs::create_dir_all(&data_path).await.context(format!(
+            "failed to create data directory at {}",
+            data_path.display()
+        ))?;
 
         let path = data_path.join("mappings.json");
         let client = Client::builder()
-            .timeout(timeout)
+            .timeout(http::TIMEOUT)
             .user_agent(format!("seadexerr/{}", env!("CARGO_PKG_VERSION")))
             .build()
             .context("failed to construct PlexAniBridge HTTP client")?;
-
-        let refresh_interval = if refresh_interval.is_zero() {
-            Duration::from_secs(21_600)
-        } else {
-            refresh_interval
-        };
 
         let mappings = Self {
             path,
             cache: Arc::new(RwLock::new(None)),
             client,
-            source_url,
-            refresh_interval,
         };
 
         if let Err(err) = mappings.refresh_mappings().await {
             warn!(
                 error = %err,
-                url = %mappings.source_url,
+                url = %SOURCE_URL,
                 "failed to download mappings on startup; attempting to load from disk cache"
             );
             mappings
                 .load_mappings()
                 .await
-                .map_err(|_| anyhow::Error::from(err))
+                .map_err(|_| err)
                 .context("failed to download mappings and no disk cache available")?;
         }
         mappings.spawn_refresh_task();
@@ -111,11 +101,11 @@ impl PlexAniBridgeMappings {
         let this = self.clone();
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(this.refresh_interval).await;
+                tokio::time::sleep(REFRESH_INTERVAL).await;
                 if let Err(error) = this.refresh_mappings().await {
                     warn!(
                         error = %error,
-                        url = %this.source_url,
+                        url = %SOURCE_URL,
                         "failed to refresh plexanibridge mappings"
                     );
                 }
@@ -123,7 +113,7 @@ impl PlexAniBridgeMappings {
         });
     }
 
-    async fn refresh_mappings(&self) -> Result<(), MappingError> {
+    async fn refresh_mappings(&self) -> Result<()> {
         let etag_path = self.etag_path();
         let cached_etag = {
             let guard = self.cache.read().await;
@@ -153,23 +143,19 @@ impl PlexAniBridgeMappings {
             }
         };
 
-        let mut request = self.client.get(self.source_url.clone());
+        let mut request = self.client.get(SOURCE_URL);
         if let Some(etag) = cached_etag {
             request = request.header(IF_NONE_MATCH, etag);
         }
 
-        let response = request
-            .send()
-            .await
-            .map_err(|source| MappingError::Download {
-                source,
-                url: self.source_url.clone(),
-            })?;
+        let response = request.send().await.context(format!(
+            "failed to download plexanibridge mappings from {SOURCE_URL}"
+        ))?;
 
         if response.status() == StatusCode::NOT_MODIFIED {
             trace!(
                 path = %self.path.display(),
-                url = %self.source_url,
+                url = %SOURCE_URL,
                 "plexanibridge mappings not modified; skipping refresh"
             );
 
@@ -186,12 +172,9 @@ impl PlexAniBridgeMappings {
             return Ok(());
         }
 
-        let response = response
-            .error_for_status()
-            .map_err(|source| MappingError::Download {
-                source,
-                url: self.source_url.clone(),
-            })?;
+        let response = response.error_for_status().context(format!(
+            "failed to download plexanibridge mappings from {SOURCE_URL}"
+        ))?;
 
         let new_etag = response
             .headers()
@@ -202,19 +185,19 @@ impl PlexAniBridgeMappings {
         let bytes = response
             .bytes()
             .await
-            .map_err(|source| MappingError::Download {
-                source,
-                url: self.source_url.clone(),
-            })?
+            .context(format!(
+                "failed to download plexanibridge mappings from {SOURCE_URL}"
+            ))?
             .to_vec();
 
         // Offload heavy JSON deserialisation and index build to a blocking thread so the
         // async runtime worker threads aren't stalled by CPU work.
         let index = {
             let bytes = bytes.clone();
-            task::spawn_blocking(move || {
-                let raw: HashMap<String, serde_json::Value> = serde_json::from_slice(&bytes)?;
-                Ok::<MappingIndex, MappingError>(Self::build_index(raw))
+            task::spawn_blocking(move || -> Result<MappingIndex> {
+                let raw: HashMap<String, serde_json::Value> = serde_json::from_slice(&bytes)
+                    .context("failed to deserialise plexanibridge mapping file")?;
+                Ok(Self::build_index(raw))
             })
             .await??
         };
@@ -227,65 +210,55 @@ impl PlexAniBridgeMappings {
         let index = Arc::new(index);
 
         let temp_path = self.path.with_extension("json.tmp");
-        fs::write(&temp_path, &bytes)
-            .await
-            .map_err(|source| MappingError::Write {
-                source,
-                path: temp_path.clone(),
-            })?;
+        fs::write(&temp_path, &bytes).await.context(format!(
+            "failed to write mapping file at {}",
+            temp_path.display()
+        ))?;
 
         match fs::rename(&temp_path, &self.path).await {
             Ok(()) => {}
             Err(err) if err.kind() == ErrorKind::AlreadyExists => {
-                fs::remove_file(&self.path)
-                    .await
-                    .map_err(|source| MappingError::Remove {
-                        source,
-                        path: self.path.clone(),
-                    })?;
-                fs::rename(&temp_path, &self.path)
-                    .await
-                    .map_err(|source| MappingError::Write {
-                        source,
-                        path: self.path.clone(),
-                    })?;
+                fs::remove_file(&self.path).await.context(format!(
+                    "failed to remove mapping file at {}",
+                    self.path.display()
+                ))?;
+                fs::rename(&temp_path, &self.path).await.context(format!(
+                    "failed to write mapping file at {}",
+                    self.path.display()
+                ))?;
             }
-            Err(source) => {
-                return Err(MappingError::Write {
-                    source,
-                    path: self.path.clone(),
-                });
+            Err(err) => {
+                bail!(
+                    "failed to write mapping file at {}: {err}",
+                    self.path.display()
+                );
             }
         }
 
         if let Some(ref etag) = new_etag {
             fs::write(&etag_path, etag.as_bytes().to_vec())
                 .await
-                .map_err(|source| MappingError::Write {
-                    source,
-                    path: etag_path.clone(),
-                })?;
-        } else if let Err(error) = fs::remove_file(&etag_path).await
-            && error.kind() != ErrorKind::NotFound
+                .context(format!(
+                    "failed to write mapping file at {}",
+                    etag_path.display()
+                ))?;
+        } else if let Err(err) = fs::remove_file(&etag_path).await
+            && err.kind() != ErrorKind::NotFound
         {
-            return Err(MappingError::Remove {
-                source: error,
-                path: etag_path.clone(),
-            });
+            bail!(
+                "failed to remove mapping file at {}: {err}",
+                etag_path.display()
+            );
         }
 
-        let metadata = fs::metadata(&self.path)
-            .await
-            .map_err(|source| MappingError::Metadata {
-                source,
-                path: self.path.clone(),
-            })?;
-        let modified = metadata
-            .modified()
-            .map_err(|source| MappingError::Metadata {
-                source,
-                path: self.path.clone(),
-            })?;
+        let metadata = fs::metadata(&self.path).await.context(format!(
+            "failed to inspect mapping file metadata at {}",
+            self.path.display()
+        ))?;
+        let modified = metadata.modified().context(format!(
+            "failed to inspect mapping file metadata at {}",
+            self.path.display()
+        ))?;
 
         {
             let mut guard = self.cache.write().await;
@@ -298,7 +271,7 @@ impl PlexAniBridgeMappings {
 
         debug!(
             path = %self.path.display(),
-            url = %self.source_url,
+            url = %SOURCE_URL,
             series,
             entries,
             "refreshed plexanibridge mappings"
@@ -307,29 +280,27 @@ impl PlexAniBridgeMappings {
         Ok(())
     }
 
-    async fn load_mappings(&self) -> Result<Arc<MappingIndex>, MappingError> {
+    async fn load_mappings(&self) -> Result<Arc<MappingIndex>> {
         let metadata = match fs::metadata(&self.path).await {
             Ok(metadata) => metadata,
-            Err(source) if source.kind() == ErrorKind::NotFound => {
-                return Err(MappingError::Read {
-                    source,
-                    path: self.path.clone(),
-                });
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                bail!(
+                    "failed to read mapping file at {}: {err}",
+                    self.path.display()
+                );
             }
-            Err(source) => {
-                return Err(MappingError::Metadata {
-                    source,
-                    path: self.path.clone(),
-                });
+            Err(err) => {
+                bail!(
+                    "failed to inspect mapping file metadata at {}: {err}",
+                    self.path.display()
+                );
             }
         };
 
-        let modified = metadata
-            .modified()
-            .map_err(|source| MappingError::Metadata {
-                source,
-                path: self.path.clone(),
-            })?;
+        let modified = metadata.modified().context(format!(
+            "failed to inspect mapping file metadata at {}",
+            self.path.display()
+        ))?;
 
         let etag_path = self.etag_path();
         let etag = match fs::read_to_string(&etag_path).await {
@@ -365,16 +336,15 @@ impl PlexAniBridgeMappings {
             }
         }
 
-        let contents = fs::read(&self.path)
-            .await
-            .map_err(|source| MappingError::Read {
-                source,
-                path: self.path.clone(),
-            })?;
+        let contents = fs::read(&self.path).await.context(format!(
+            "failed to read mapping file at {}",
+            self.path.display()
+        ))?;
 
-        let index = task::spawn_blocking(move || {
-            let raw: HashMap<String, serde_json::Value> = serde_json::from_slice(&contents)?;
-            Ok::<MappingIndex, MappingError>(Self::build_index(raw))
+        let index = task::spawn_blocking(move || -> Result<MappingIndex> {
+            let raw: HashMap<String, serde_json::Value> = serde_json::from_slice(&contents)
+                .context("failed to deserialise plexanibridge mapping file")?;
+            Ok(Self::build_index(raw))
         })
         .await??;
         let series = index.tvdb_to_entries.len();
@@ -475,11 +445,7 @@ impl PlexAniBridgeMappings {
         }
     }
 
-    pub async fn resolve_anilist_id(
-        &self,
-        tvdb_id: i64,
-        season: u32,
-    ) -> Result<Option<i64>, MappingError> {
+    pub async fn resolve_anilist_id(&self, tvdb_id: i64, season: u32) -> Result<Option<i64>> {
         let mappings = self.load_mappings().await?;
         let season_key = format!("s{season}");
 
@@ -514,10 +480,7 @@ impl PlexAniBridgeMappings {
         Ok(None)
     }
 
-    pub async fn resolve_anilist_id_for_tvdb(
-        &self,
-        tvdb_id: i64,
-    ) -> Result<Option<i64>, MappingError> {
+    pub async fn resolve_anilist_id_for_tvdb(&self, tvdb_id: i64) -> Result<Option<i64>> {
         let mappings = self.load_mappings().await?;
         let Some(entries) = mappings.tvdb_to_entries.get(&tvdb_id) else {
             trace!(tvdb_id, "no entries found for tvdb id");
@@ -557,10 +520,7 @@ impl PlexAniBridgeMappings {
         Ok(None)
     }
 
-    pub async fn resolve_anilist_id_for_tmdb(
-        &self,
-        tmdb_id: i64,
-    ) -> Result<Option<i64>, MappingError> {
+    pub async fn resolve_anilist_id_for_tmdb(&self, tmdb_id: i64) -> Result<Option<i64>> {
         let mappings = self.load_mappings().await?;
         if let Some(anilist_id) = mappings.tmdb_to_anilist.get(&tmdb_id) {
             trace!(tmdb_id, anilist_id, "resolved tmdb mapping");
@@ -571,15 +531,12 @@ impl PlexAniBridgeMappings {
         }
     }
 
-    pub async fn resolve_tmdb_id(&self, anilist_id: i64) -> Result<Option<i64>, MappingError> {
+    pub async fn resolve_tmdb_id(&self, anilist_id: i64) -> Result<Option<i64>> {
         let mappings = self.load_mappings().await?;
         Ok(mappings.anilist_to_tmdb.get(&anilist_id).copied())
     }
 
-    pub async fn resolve_tvdb_mappings(
-        &self,
-        anilist_id: i64,
-    ) -> Result<Vec<TvdbMapping>, MappingError> {
+    pub async fn resolve_tvdb_mappings(&self, anilist_id: i64) -> Result<Vec<TvdbMapping>> {
         let mappings = self.load_mappings().await?;
 
         let result = mappings
@@ -622,42 +579,4 @@ pub(crate) fn parse_season_key(key: &str) -> Option<u32> {
     }
 
     digits.parse().ok()
-}
-
-#[derive(Debug, Error)]
-pub enum MappingError {
-    #[error("failed to download plexanibridge mappings from {url}")]
-    Download {
-        #[source]
-        source: reqwest::Error,
-        url: Url,
-    },
-    #[error("failed to read mapping file at {path}")]
-    Read {
-        #[source]
-        source: std::io::Error,
-        path: PathBuf,
-    },
-    #[error("failed to write mapping file at {path}")]
-    Write {
-        #[source]
-        source: std::io::Error,
-        path: PathBuf,
-    },
-    #[error("failed to remove mapping file at {path}")]
-    Remove {
-        #[source]
-        source: std::io::Error,
-        path: PathBuf,
-    },
-    #[error("failed to inspect mapping file metadata at {path}")]
-    Metadata {
-        #[source]
-        source: std::io::Error,
-        path: PathBuf,
-    },
-    #[error("failed to deserialise plexanibridge mapping file")]
-    Deserialisation(#[from] serde_json::Error),
-    #[error("background task failed")]
-    TaskJoin(#[from] tokio::task::JoinError),
 }
