@@ -4,7 +4,7 @@ use crate::anilist::{AniListClient, AniListError, MediaFormat};
 use crate::config::{AnimePreference, AppConfig};
 use crate::mapping::{PlexAniBridgeMappings, TvdbMapping, parse_season_key};
 use crate::radarr::{RadarrClient, RadarrError};
-use crate::releases::{self, ReleasesClient, ReleasesError, Torrent};
+use crate::releases::{ReleasesClient, ReleasesError, Torrent};
 use crate::sonarr::{SonarrClient, SonarrError};
 use crate::torznab::{self, ANIME_CATEGORY, MOVIE_CATEGORY, TorznabItem};
 use thiserror::Error;
@@ -151,7 +151,7 @@ impl SearchService {
             .take(limit)
             .collect();
 
-        let items = self.process_torrents(torrents, feed_title, self.tv_category_ids());
+        let items = self.process_torrents_ranked(torrents, feed_title, self.tv_category_ids());
         Ok((items, total))
     }
 
@@ -244,7 +244,7 @@ impl SearchService {
         };
 
         let torrents: Vec<Torrent> = collected.into_iter().skip(offset).take(limit).collect();
-        let items = self.process_torrents(torrents, feed_title, self.movie_category_ids());
+        let items = self.process_torrents_ranked(torrents, feed_title, self.movie_category_ids());
 
         Ok((items, total))
     }
@@ -577,42 +577,64 @@ impl SearchService {
 
     fn process_torrents(
         &self,
-        releases: Vec<Torrent>,
+        torrents: Vec<Torrent>,
         title: String,
         categories: Vec<u32>,
     ) -> Vec<TorznabItem> {
-        // First skip all deband required releases if enabled
-        let deband_filtered: Vec<Torrent> = releases
+        torrents
             .into_iter()
-            .filter(|release| {
-                if self.config.skip_deband
-                    && release
-                        .tags
-                        .iter()
-                        .any(|tag| releases::DEBAND_TAGS.contains(&tag.as_str()))
-                {
-                    trace!(torrent_id = %release.id, "skipping torrent due to Deband tag");
-                    false
-                } else {
-                    true
-                }
-            })
+            .filter(|release| !self.skip_due_to_deband(release))
+            .map(|release| self.build_torznab_item(release, title.clone(), categories.clone(), 100))
+            .collect()
+    }
+
+    fn process_torrents_ranked(
+        &self,
+        torrents: Vec<Torrent>,
+        title: String,
+        categories: Vec<u32>,
+    ) -> Vec<TorznabItem> {
+        let filtered: Vec<Torrent> = torrents
+            .into_iter()
+            .filter(|release| !self.skip_due_to_deband(release))
             .collect();
 
-        // Prioritization filter
-        deband_filtered
+        let priorities = self.compute_priorities(&filtered);
+
+        filtered
             .into_iter()
-            .map(|release| {
-                let priority = match self.config.preference {
-                    AnimePreference::Best => release.is_best,
-                    AnimePreference::DualAudio => release.dual_audio,
-                };
-
-                let seeders = if priority { 1000 } else { 100 };
-
+            .zip(priorities)
+            .map(|(release, preferred)| {
+                let seeders = if preferred { 1000 } else { 100 };
                 self.build_torznab_item(release, title.clone(), categories.clone(), seeders)
             })
             .collect()
+    }
+
+    fn skip_due_to_deband(&self, release: &Torrent) -> bool {
+        if self.config.skip_deband && release.is_deband() {
+            trace!(torrent_id = %release.id, "skipping torrent due to Deband tag");
+            true
+        } else {
+            false
+        }
+    }
+
+    fn compute_priorities(&self, releases: &[Torrent]) -> Vec<bool> {
+        match self.config.preference {
+            AnimePreference::Best => releases.iter().map(|r| r.is_best).collect(),
+            AnimePreference::DualAudio => releases.iter().map(|r| r.dual_audio).collect(),
+            AnimePreference::Smallest => {
+                let smallest_idx = releases
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, r)| r.size_bytes)
+                    .map(|(i, _)| i);
+                (0..releases.len())
+                    .map(|i| Some(i) == smallest_idx)
+                    .collect()
+            }
+        }
     }
 
     fn build_torznab_item(

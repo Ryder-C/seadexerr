@@ -11,7 +11,7 @@ use crate::http;
 
 const RELEASES_BASE_URL: &str = "https://releases.moe/api/";
 const PAGE_SIZE: usize = 100;
-pub const DEBAND_TAGS: &[&str] = &["Deband Required"];
+const DEBAND_TAG: &str = "Deband Required";
 
 #[derive(Debug, Clone)]
 pub struct ReleasesClient {
@@ -217,6 +217,10 @@ pub struct Torrent {
 }
 
 impl Torrent {
+    pub fn is_deband(&self) -> bool {
+        self.tags.iter().any(|tag| tag == DEBAND_TAG)
+    }
+
     fn from_record(record: TorrentRecord, anilist_id: Option<i64>) -> Self {
         let download_url = rewritten_download_url(&record).unwrap_or_else(|| record.url.clone());
         let source_url = record.url.clone();
