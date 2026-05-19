@@ -1,18 +1,52 @@
-use std::{env, net::SocketAddr, path::PathBuf, time::Duration};
+//! Application configuration loaded from environment variables.
+//!
+//! At least one of `SONARR_API_KEY` or `RADARR_API_KEY` must be set, everything
+//! else has a default.
 
-use anyhow::{Context, Result};
+use std::{
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+};
+
+use anyhow::{Result, bail};
 use reqwest::Url;
+use serde::Deserialize;
 
-pub const RELEASES_BASE_URL: &str = "https://releases.moe/api/";
-pub const ANILIST_BASE_URL: &str = "https://graphql.anilist.co";
-pub const MAPPING_SOURCE_URL: &str =
-    "https://github.com/anibridge/anibridge-mappings/releases/latest/download/mappings.min.json";
-pub const MAPPING_REFRESH_INTERVAL: Duration = Duration::from_secs(21_600); // 6 hours
 pub const APPLICATION_TITLE: &str = "Seadexerr";
 pub const APPLICATION_DESCRIPTION: &str = "Indexer bridge for releases.moe";
-pub const DEFAULT_LIMIT: usize = 100;
-pub const TIMEOUT: Duration = Duration::from_secs(10);
 pub const DATA_PATH: &str = "data";
+
+/// How to pick between multiple eligible releases for the same entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AnimePreference {
+    /// Use the release marked as best on releases.moe.
+    #[default]
+    Best,
+    /// Prefer releases that include dual audio tracks.
+    DualAudio,
+}
+
+#[derive(Deserialize)]
+struct EnvConfig {
+    #[serde(default = "default_host")]
+    seadexerr_host: IpAddr,
+    #[serde(default = "default_port")]
+    seadexerr_port: u16,
+    seadexerr_public_base_url: Option<Url>,
+    sonarr_api_key: Option<String>,
+    #[serde(default = "default_sonarr_url")]
+    sonarr_base_url: Url,
+    radarr_api_key: Option<String>,
+    #[serde(default = "default_radarr_url")]
+    radarr_base_url: Url,
+
+    // Extra configuration
+    #[serde(default)]
+    seadexerr_skip_deband: bool,
+    #[serde(default)]
+    seadexerr_prefer: AnimePreference,
+}
 
 #[derive(Clone, Debug)]
 pub struct AppConfig {
@@ -21,7 +55,62 @@ pub struct AppConfig {
     pub sonarr: Option<SonarrConfig>,
     pub radarr: Option<RadarrConfig>,
     pub skip_deband: bool,
-    pub prefer_dual_audio: bool,
+    pub preference: AnimePreference,
+}
+
+impl AppConfig {
+    pub fn from_env() -> Result<Self> {
+        envy::from_env::<EnvConfig>()?.try_into()
+    }
+}
+
+impl TryFrom<EnvConfig> for AppConfig {
+    type Error = anyhow::Error;
+
+    fn try_from(env_config: EnvConfig) -> Result<Self, Self::Error> {
+        let EnvConfig {
+            seadexerr_host,
+            seadexerr_port,
+            seadexerr_public_base_url,
+            sonarr_api_key,
+            sonarr_base_url,
+            radarr_api_key,
+            radarr_base_url,
+            seadexerr_skip_deband,
+            seadexerr_prefer,
+        } = env_config;
+
+        let listen_addr = SocketAddr::new(seadexerr_host, seadexerr_port);
+
+        let public_base_url = seadexerr_public_base_url;
+
+        let sonarr = sonarr_api_key.map(|api_key| SonarrConfig {
+            url: sonarr_base_url,
+            api_key,
+        });
+
+        let radarr = radarr_api_key.map(|api_key| RadarrConfig {
+            url: radarr_base_url,
+            api_key,
+        });
+
+        let skip_deband = seadexerr_skip_deband;
+
+        let preference = seadexerr_prefer;
+
+        if sonarr.is_none() && radarr.is_none() {
+            bail!("at least one of Sonarr or Radarr configuration must be provided");
+        }
+
+        Ok(AppConfig {
+            listen_addr,
+            public_base_url,
+            sonarr,
+            radarr,
+            skip_deband,
+            preference,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -36,84 +125,77 @@ pub struct RadarrConfig {
     pub api_key: String,
 }
 
-impl AppConfig {
-    pub fn from_env() -> Result<Self> {
-        let host = env::var("SEADEXERR_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-        let port = env::var("SEADEXERR_PORT").unwrap_or_else(|_| "6767".to_string());
-        let port = port
-            .parse::<u16>()
-            .context("SEADEXERR_PORT must be a valid u16 integer")?;
-        let listen_addr: SocketAddr = format!("{host}:{port}")
-            .parse()
-            .context("failed to parse socket address from SEADEXERR_HOST and SEADEXERR_PORT")?;
-
-        let public_base_url = env::var("SEADEXERR_PUBLIC_BASE_URL")
-            .ok()
-            .map(|value| {
-                Url::parse(&value).context("SEADEXERR_PUBLIC_BASE_URL must be a valid URL")
-            })
-            .transpose()?;
-
-        let sonarr = match env::var("SONARR_API_KEY") {
-            Ok(api_key) if !api_key.trim().is_empty() => {
-                let raw_sonarr_url = env::var("SONARR_BASE_URL")
-                    .unwrap_or_else(|_| "http://localhost:8989".to_string());
-                let sonarr_url = parse_root_url(&raw_sonarr_url, "SONARR_BASE_URL")?;
-
-                Some(SonarrConfig {
-                    url: sonarr_url,
-                    api_key,
-                })
-            }
-            _ => None,
-        };
-        let skip_deband = env::var("SEADEXERR_SKIP_DEBAND")
-            .map(|v| v != "false")
-            .unwrap_or(false);
-
-        let prefer_dual_audio = env::var("SEADEXERR_PREFER_DUAL_AUDIO")
-            .map(|v| v != "false")
-            .unwrap_or(false);
-
-        let radarr = match env::var("RADARR_API_KEY") {
-            Ok(api_key) if !api_key.trim().is_empty() => {
-                let raw_radarr_url = env::var("RADARR_BASE_URL")
-                    .unwrap_or_else(|_| "http://localhost:7878".to_string());
-                let radarr_url = parse_root_url(&raw_radarr_url, "RADARR_BASE_URL")?;
-
-                Some(RadarrConfig {
-                    url: radarr_url,
-                    api_key,
-                })
-            }
-            _ => None,
-        };
-
-        if sonarr.is_none() && radarr.is_none() {
-            anyhow::bail!(
-                "At least one of Sonarr or Radarr must be configured via its API key (SONARR_API_KEY or RADARR_API_KEY)"
-            );
-        }
-
-        Ok(Self {
-            listen_addr,
-            public_base_url,
-            sonarr,
-            radarr,
-            skip_deband,
-            prefer_dual_audio,
-        })
-    }
+fn default_host() -> IpAddr {
+    IpAddr::from([0, 0, 0, 0])
 }
 
-pub fn get_data_path() -> PathBuf {
+fn default_port() -> u16 {
+    6767
+}
+
+fn default_sonarr_url() -> Url {
+    Url::parse("http://localhost:8989/").expect("default Sonarr url must be valid")
+}
+
+fn default_radarr_url() -> Url {
+    Url::parse("http://localhost:7878/").expect("default Radarr url must be valid")
+}
+
+pub fn default_data_path() -> PathBuf {
     PathBuf::from(DATA_PATH)
 }
 
-fn parse_root_url(value: &str, label: &str) -> Result<Url> {
-    let mut normalized = value.trim().to_string();
-    if !normalized.ends_with('/') {
-        normalized.push('/');
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_env() -> EnvConfig {
+        EnvConfig {
+            seadexerr_host: default_host(),
+            seadexerr_port: default_port(),
+            seadexerr_public_base_url: None,
+            sonarr_api_key: None,
+            sonarr_base_url: default_sonarr_url(),
+            radarr_api_key: None,
+            radarr_base_url: default_radarr_url(),
+            seadexerr_skip_deband: false,
+            seadexerr_prefer: AnimePreference::Best,
+        }
     }
-    Url::parse(&normalized).with_context(|| format!("{label} must be a valid URL"))
+
+    #[test]
+    fn requires_sonarr_or_radarr() {
+        assert!(AppConfig::try_from(base_env()).is_err());
+    }
+
+    #[test]
+    fn sonarr_only() {
+        let env = EnvConfig {
+            sonarr_api_key: Some("k".into()),
+            ..base_env()
+        };
+
+        assert!(AppConfig::try_from(env).is_ok());
+    }
+
+    #[test]
+    fn radarr_only() {
+        let env = EnvConfig {
+            radarr_api_key: Some("k".into()),
+            ..base_env()
+        };
+
+        assert!(AppConfig::try_from(env).is_ok());
+    }
+
+    #[test]
+    fn sonarr_and_radarr() {
+        let env = EnvConfig {
+            sonarr_api_key: Some("k".into()),
+            radarr_api_key: Some("k".into()),
+            ..base_env()
+        };
+
+        assert!(AppConfig::try_from(env).is_ok());
+    }
 }

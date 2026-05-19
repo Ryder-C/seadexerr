@@ -1,11 +1,12 @@
 [package]
 name = "seadexerr"
-version = "1.0.6"
+version = "2.0.0"
 edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
 axum = { version = "0.8.7", features = ["macros"] }
+envy = "0.4.2"
 quick-xml = "0.38.4"
 reqwest = { version = "0.12.24", default-features = false, features = [
     "json",
@@ -14,6 +15,7 @@ reqwest = { version = "0.12.24", default-features = false, features = [
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 serde_with = "3.16.0"
+strum = { version = "0.28.0", features = ["derive"] }
 thiserror = "2.0.17"
 time = { version = "0.3.44", features = ["formatting", "parsing"] }
 tokio = { version = "1.48.0", features = [
@@ -25,7 +27,10 @@ tokio = { version = "1.48.0", features = [
 ] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["fmt", "env-filter"] }
-url = "2.5.7"
+url = { version = "2.5.7", features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [profile.release]
 lto = true

@@ -3,7 +3,6 @@ use std::{
     io::ErrorKind,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
 };
 
 use reqwest::Client;
@@ -12,35 +11,33 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 use tokio::task;
 use tracing::{trace, warn};
-use url::Url;
+
+use crate::{config::SonarrConfig, http};
+
+const CACHE_FILENAME: &str = "sonarr_titles.json";
 
 #[derive(Debug, Clone)]
 pub struct SonarrClient {
     http: Client,
-    base_url: Url,
-    api_key: String,
+    config: SonarrConfig,
     cache: Arc<RwLock<HashMap<i64, String>>>,
     cache_path: PathBuf,
 }
 
 impl SonarrClient {
-    pub fn new(
-        base_url: Url,
-        api_key: String,
-        timeout: Duration,
-        cache_path: PathBuf,
-    ) -> anyhow::Result<Self> {
+    pub fn new(config: SonarrConfig, data_path: PathBuf) -> anyhow::Result<Self> {
         let http = Client::builder()
-            .timeout(timeout)
+            .timeout(http::TIMEOUT)
             .user_agent(format!("seadexerr/{}", env!("CARGO_PKG_VERSION")))
             .build()?;
+
+        let cache_path = data_path.join(CACHE_FILENAME);
 
         let cache = load_cache(&cache_path)?;
 
         Ok(Self {
             http,
-            base_url,
-            api_key,
+            config,
             cache: Arc::new(RwLock::new(cache)),
             cache_path,
         })
@@ -53,7 +50,8 @@ impl SonarrClient {
         }
 
         let mut url = self
-            .base_url
+            .config
+            .url
             .join("api/v3/series/lookup")
             .map_err(SonarrError::Url)?;
 
@@ -71,7 +69,7 @@ impl SonarrClient {
         let response = self
             .http
             .get(url)
-            .header("X-Api-Key", &self.api_key)
+            .header("X-Api-Key", &self.config.api_key)
             .send()
             .await?;
 
@@ -256,12 +254,124 @@ pub enum SonarrError {
         source: serde_json::Error,
         path: PathBuf,
     },
-    #[error("failed to serialise cached Sonarr titles")]
-    CacheSerialise(#[from] serde_json::Error),
     #[error("failed to create cache directory at {path}")]
     CacheDir {
         #[source]
         source: std::io::Error,
         path: PathBuf,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn make_config() -> SonarrConfig {
+        SonarrConfig {
+            url: reqwest::Url::parse("http://localhost:8989/").unwrap(),
+            api_key: "test-key".to_string(),
+        }
+    }
+
+    fn make_client(dir: &TempDir) -> SonarrClient {
+        SonarrClient::new(make_config(), dir.path().to_path_buf())
+            .expect("client construction must succeed")
+    }
+
+    #[test]
+    fn loads_cache_from_disk() {
+        let dir = TempDir::new().unwrap();
+
+        let missing = dir.path().join("missing.json");
+        assert!(load_cache(&missing).unwrap().is_empty());
+
+        let empty = dir.path().join("empty.json");
+        std::fs::write(&empty, "").unwrap();
+        assert!(load_cache(&empty).unwrap().is_empty());
+
+        let populated = dir.path().join("populated.json");
+        std::fs::write(&populated, r#"{"42":"Naruto","99":"Bleach"}"#).unwrap();
+        let cache = load_cache(&populated).unwrap();
+        assert_eq!(cache.get(&42), Some(&"Naruto".to_string()));
+        assert_eq!(cache.get(&99), Some(&"Bleach".to_string()));
+
+        let bad = dir.path().join("bad.json");
+        std::fs::write(&bad, "not json").unwrap();
+        assert!(matches!(
+            load_cache(&bad),
+            Err(SonarrError::CacheParse { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn stores_and_retrieves_titles() {
+        let dir = TempDir::new().unwrap();
+        let client = make_client(&dir);
+
+        assert_eq!(client.cached_title(42).await, None);
+
+        client.store_title(42, "Naruto").await.unwrap();
+        assert_eq!(client.cached_title(42).await, Some("Naruto".to_string()));
+
+        let reloaded = load_cache(&dir.path().join(CACHE_FILENAME)).unwrap();
+        assert_eq!(reloaded.get(&42), Some(&"Naruto".to_string()));
+    }
+
+    #[tokio::test]
+    async fn retain_titles_clears_when_keep_empty() {
+        let dir = TempDir::new().unwrap();
+        let client = make_client(&dir);
+
+        client.store_title(1, "A").await.unwrap();
+        client.store_title(2, "B").await.unwrap();
+
+        client.retain_titles(&HashSet::new()).await.unwrap();
+
+        assert_eq!(client.cached_title(1).await, None);
+        assert_eq!(client.cached_title(2).await, None);
+        assert!(
+            load_cache(&dir.path().join(CACHE_FILENAME))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn retain_titles_drops_unlisted_entries() {
+        let dir = TempDir::new().unwrap();
+        let client = make_client(&dir);
+
+        client.store_title(1, "A").await.unwrap();
+        client.store_title(2, "B").await.unwrap();
+        client.store_title(3, "C").await.unwrap();
+
+        let keep: HashSet<i64> = [1, 3].into_iter().collect();
+        client.retain_titles(&keep).await.unwrap();
+
+        assert_eq!(client.cached_title(1).await, Some("A".to_string()));
+        assert_eq!(client.cached_title(2).await, None);
+        assert_eq!(client.cached_title(3).await, Some("C".to_string()));
+    }
+
+    #[tokio::test]
+    async fn retain_titles_skips_persist_when_unchanged() {
+        // Superset keep on populated cache: nothing removed, no rewrite expected.
+        let dir = TempDir::new().unwrap();
+        let client = make_client(&dir);
+        client.store_title(1, "A").await.unwrap();
+
+        let cache_path = dir.path().join(CACHE_FILENAME);
+        std::fs::remove_file(&cache_path).unwrap();
+
+        let keep: HashSet<i64> = [1, 2].into_iter().collect();
+        client.retain_titles(&keep).await.unwrap();
+        assert!(!cache_path.exists());
+
+        // Empty keep on empty cache: same short-circuit.
+        let dir = TempDir::new().unwrap();
+        let client = make_client(&dir);
+        client.retain_titles(&HashSet::new()).await.unwrap();
+        assert!(!dir.path().join(CACHE_FILENAME).exists());
+    }
 }
