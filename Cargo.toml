@@ -4,30 +4,30 @@ version = "2.0.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0.100"
-axum = { version = "0.8.7", features = ["macros"] }
+anyhow = "1.0.102"
+axum = { version = "0.8.9", features = ["macros"] }
 envy = "0.4.2"
 quick-xml = "0.38.4"
-reqwest = { version = "0.12.24", default-features = false, features = [
+reqwest = { version = "0.13.3", default-features = false, features = [
     "json",
-    "rustls-tls",
+    "rustls",
 ] }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.145"
-serde_with = "3.16.0"
+serde_json = "1.0.149"
+serde_with = "3.20.0"
 strum = { version = "0.28.0", features = ["derive"] }
-thiserror = "2.0.17"
-time = { version = "0.3.44", features = ["formatting", "parsing"] }
-tokio = { version = "1.48.0", features = [
+thiserror = "2.0.18"
+time = { version = "0.3.47", features = ["formatting", "parsing"] }
+tokio = { version = "1.52.3", features = [
     "fs",
     "macros",
     "rt-multi-thread",
     "sync",
     "time",
 ] }
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.20", features = ["fmt", "env-filter"] }
-url = { version = "2.5.7", features = ["serde"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["fmt", "env-filter"] }
+url = { version = "2.5.8", features = ["serde"] }
 
 [dev-dependencies]
 tempfile = "3"
