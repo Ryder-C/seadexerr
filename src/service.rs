@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::anilist::{AniListClient, AniListError, MediaFormat};
-use crate::config::{self, AppConfig};
-use crate::mapping::{MappingError, PlexAniBridgeMappings, TvdbMapping, parse_season_key};
+use crate::config::{AnimePreference, AppConfig};
+use crate::mapping::{PlexAniBridgeMappings, TvdbMapping, parse_season_key};
 use crate::radarr::{RadarrClient, RadarrError};
 use crate::releases::{self, ReleasesClient, ReleasesError, Torrent};
 use crate::sonarr::{SonarrClient, SonarrError};
@@ -10,10 +10,13 @@ use crate::torznab::{self, ANIME_CATEGORY, MOVIE_CATEGORY, TorznabItem};
 use thiserror::Error;
 use tracing::{debug, info, trace, warn};
 
+/// Upper bound on items returned in a single torznab response.
+const MAX_RESPONSE_ITEMS: usize = 100;
+
 #[derive(Debug, Error)]
 pub enum ServiceError {
-    #[error(transparent)]
-    Mapping(#[from] MappingError),
+    #[error("{0:#}")]
+    Mapping(anyhow::Error),
     #[error(transparent)]
     Releases(#[from] ReleasesError),
     #[error(transparent)]
@@ -22,8 +25,6 @@ pub enum ServiceError {
     Sonarr(#[from] SonarrError),
     #[error(transparent)]
     Radarr(#[from] RadarrError),
-    #[error("unsupported operation: {0}")]
-    Unsupported(String),
 }
 
 pub struct SearchService {
@@ -62,8 +63,8 @@ impl SearchService {
         offset: Option<usize>,
     ) -> Result<(Vec<TorznabItem>, usize), ServiceError> {
         let limit = limit
-            .unwrap_or(config::DEFAULT_LIMIT)
-            .clamp(1, config::DEFAULT_LIMIT);
+            .unwrap_or(MAX_RESPONSE_ITEMS)
+            .clamp(1, MAX_RESPONSE_ITEMS);
         let offset = offset.unwrap_or(0);
 
         if self.sonarr.is_none() {
@@ -91,10 +92,9 @@ impl SearchService {
 
         trace!(tvdb_id, season, anilist_id, "querying releases.moe");
 
-        let fetch_limit = offset.saturating_add(limit).min(config::DEFAULT_LIMIT);
         let collected: Vec<Torrent> = self
             .releases
-            .search_torrents(anilist_id, fetch_limit)
+            .search_torrents(anilist_id)
             .await
             .map_err(ServiceError::Releases)?;
 
@@ -162,8 +162,8 @@ impl SearchService {
         offset: Option<usize>,
     ) -> Result<(Vec<TorznabItem>, usize), ServiceError> {
         let limit = limit
-            .unwrap_or(config::DEFAULT_LIMIT)
-            .clamp(1, config::DEFAULT_LIMIT);
+            .unwrap_or(MAX_RESPONSE_ITEMS)
+            .clamp(1, MAX_RESPONSE_ITEMS);
         let offset = offset.unwrap_or(0);
 
         if self.radarr.is_none() {
@@ -192,10 +192,9 @@ impl SearchService {
             anilist_id, limit, "movie-search querying releases.moe"
         );
 
-        let fetch_limit = offset.saturating_add(limit).min(config::DEFAULT_LIMIT);
         let collected: Vec<Torrent> = self
             .releases
-            .search_torrents(anilist_id, fetch_limit)
+            .search_torrents(anilist_id)
             .await
             .map_err(ServiceError::Releases)?;
 
@@ -258,8 +257,8 @@ impl SearchService {
         offset: Option<usize>,
     ) -> Result<(Vec<TorznabItem>, usize), ServiceError> {
         let limit = limit
-            .unwrap_or(config::DEFAULT_LIMIT)
-            .clamp(1, config::DEFAULT_LIMIT);
+            .unwrap_or(MAX_RESPONSE_ITEMS)
+            .clamp(1, MAX_RESPONSE_ITEMS);
         let offset = offset.unwrap_or(0);
 
         if query.is_some() {
@@ -280,10 +279,9 @@ impl SearchService {
 
         trace!(limit, offset, "serving search via recent public torrents");
 
-        let fetch_limit = config::DEFAULT_LIMIT;
         let mut torrents = self
             .releases
-            .recent_public_torrents(fetch_limit)
+            .recent_public_torrents()
             .await
             .map_err(ServiceError::Releases)?;
 
@@ -514,7 +512,7 @@ impl SearchService {
         let radarr = self
             .radarr
             .as_ref()
-            .ok_or_else(|| ServiceError::Unsupported("Radarr is disabled".to_string()))?;
+            .expect("resolve_movie_generic_title requires Radarr to be enabled");
 
         let movie = match radarr.resolve_name(tmdb_id).await {
             Ok(movie) => movie,
@@ -537,7 +535,7 @@ impl SearchService {
         let sonarr = self
             .sonarr
             .as_ref()
-            .ok_or_else(|| ServiceError::Unsupported("Sonarr is disabled".to_string()))?;
+            .expect("resolve_feed_title requires Sonarr to be enabled");
         let series_title = sonarr
             .resolve_name(tvdb_id)
             .await
@@ -579,46 +577,40 @@ impl SearchService {
 
     fn process_torrents(
         &self,
-        torrents: Vec<Torrent>,
+        releases: Vec<Torrent>,
         title: String,
         categories: Vec<u32>,
     ) -> Vec<TorznabItem> {
-        let filtered: Vec<Torrent> = torrents
+        // First skip all deband required releases if enabled
+        let deband_filtered: Vec<Torrent> = releases
             .into_iter()
-            .filter(|torrent| {
+            .filter(|release| {
                 if self.config.skip_deband
-                    && torrent
+                    && release
                         .tags
                         .iter()
                         .any(|tag| releases::DEBAND_TAGS.contains(&tag.as_str()))
                 {
-                    trace!(torrent_id = %torrent.id, "skipping torrent due to Deband tag");
-                    return false;
+                    trace!(torrent_id = %release.id, "skipping torrent due to Deband tag");
+                    false
+                } else {
+                    true
                 }
-                true
             })
             .collect();
 
-        let has_dual_audio = self.config.prefer_dual_audio && filtered.iter().any(|t| t.dual_audio);
-
-        filtered
+        // Prioritization filter
+        deband_filtered
             .into_iter()
-            .map(|torrent| {
-                let seeders = if self.config.prefer_dual_audio {
-                    if has_dual_audio {
-                        if torrent.dual_audio { 1000 } else { 100 }
-                    } else if torrent.is_best {
-                        1000
-                    } else {
-                        100
-                    }
-                } else if torrent.is_best {
-                    1000
-                } else {
-                    100
+            .map(|release| {
+                let priority = match self.config.preference {
+                    AnimePreference::Best => release.is_best,
+                    AnimePreference::DualAudio => release.dual_audio,
                 };
 
-                self.build_torznab_item(torrent, title.clone(), categories.clone(), seeders)
+                let seeders = if priority { 1000 } else { 100 };
+
+                self.build_torznab_item(release, title.clone(), categories.clone(), seeders)
             })
             .collect()
     }
@@ -637,11 +629,7 @@ impl SearchService {
             info_hash,
             published,
             size_bytes,
-            is_best: _,
-            dual_audio: _,
-            tags: _,
-            files: _,
-            anilist_id: _,
+            ..
         } = torrent;
 
         let comments = if source_url.is_empty() {

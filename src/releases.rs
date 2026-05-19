@@ -1,42 +1,39 @@
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
 
+use anyhow::Result;
 use reqwest::{Client, Url};
 use serde::Deserialize;
 use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tracing::trace;
 
+use crate::http;
+
+const RELEASES_BASE_URL: &str = "https://releases.moe/api/";
+const PAGE_SIZE: usize = 100;
 pub const DEBAND_TAGS: &[&str] = &["Deband Required"];
 
 #[derive(Debug, Clone)]
 pub struct ReleasesClient {
     http: Client,
     base_url: Url,
-    default_limit: usize,
 }
 
 impl ReleasesClient {
-    pub fn new(base_url: Url, timeout: Duration, default_limit: usize) -> anyhow::Result<Self> {
+    pub fn new() -> Result<Self> {
         let http = Client::builder()
-            .timeout(timeout)
+            .timeout(http::TIMEOUT)
             .user_agent(format!("seadexerr/{}", env!("CARGO_PKG_VERSION")))
             .build()?;
 
-        Ok(Self {
-            http,
-            base_url,
-            default_limit,
-        })
+        let base_url = Url::parse(RELEASES_BASE_URL)?;
+
+        Ok(Self { http, base_url })
     }
 
-    pub async fn search_torrents(
-        &self,
-        anilist_id: i64,
-        limit: usize,
-    ) -> Result<Vec<Torrent>, ReleasesError> {
+    pub async fn search_torrents(&self, anilist_id: i64) -> Result<Vec<Torrent>, ReleasesError> {
         let payload = self
-            .fetch_entries_with(limit, |params| {
+            .fetch_entries_with(|params| {
                 params.push((
                     "filter".to_string(),
                     format!("(alID={anilist_id})&&incomplete=false"),
@@ -44,17 +41,7 @@ impl ReleasesClient {
             })
             .await?;
 
-        trace!(
-            anilist_id,
-            limit,
-            items = payload.items.len(),
-            "releases.moe entries response received"
-        );
-
-        let torrents: Vec<Torrent> = Self::entries_to_torrents(payload.items)
-            .into_iter()
-            .take(limit)
-            .collect();
+        let torrents = Self::entries_to_torrents(payload.items);
 
         trace!(
             anilist_id,
@@ -65,12 +52,9 @@ impl ReleasesClient {
         Ok(torrents)
     }
 
-    pub async fn recent_public_torrents(
-        &self,
-        limit: usize,
-    ) -> Result<Vec<Torrent>, ReleasesError> {
+    pub async fn recent_public_torrents(&self) -> Result<Vec<Torrent>, ReleasesError> {
         let payload = self
-            .fetch_entries_with(limit, |params| {
+            .fetch_entries_with(|params| {
                 params.push(("sort".to_string(), "-updated".to_string()));
                 params.push(("filter".to_string(), "(incomplete=false)".to_string()));
             })
@@ -80,7 +64,6 @@ impl ReleasesClient {
 
         trace!(
             feed = "recent-public",
-            limit,
             returned = torrents.len(),
             "releases.moe entries response received"
         );
@@ -88,21 +71,14 @@ impl ReleasesClient {
         Ok(torrents)
     }
 
-    async fn fetch_entries_with<F>(
-        &self,
-        limit: usize,
-        configure: F,
-    ) -> Result<EntriesResponse, ReleasesError>
+    async fn fetch_entries_with<F>(&self, configure: F) -> Result<EntriesResponse, ReleasesError>
     where
         F: FnOnce(&mut Vec<(String, String)>),
     {
         let mut params = vec![
             ("expand".to_string(), "trs".to_string()),
             ("page".to_string(), "1".to_string()),
-            (
-                "perPage".to_string(),
-                limit.min(self.default_limit).to_string(),
-            ),
+            ("perPage".to_string(), PAGE_SIZE.to_string()),
         ];
         configure(&mut params);
 
@@ -179,8 +155,7 @@ impl ReleasesClient {
                 let mut pairs = url.query_pairs_mut();
                 pairs.append_pair("filter", &filter);
                 pairs.append_pair("expand", "trs");
-                let per_page = std::cmp::max(self.default_limit, chunk.len());
-                pairs.append_pair("perPage", &per_page.to_string());
+                pairs.append_pair("perPage", &PAGE_SIZE.to_string());
             }
 
             let response = self.http.get(url).send().await?.error_for_status()?;
@@ -329,4 +304,167 @@ pub enum ReleasesError {
     Http(#[from] reqwest::Error),
     #[error("failed to deserialise releases.moe response payload")]
     Deserialisation(#[from] serde_json::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_torrent_record(id: &str) -> TorrentRecord {
+        TorrentRecord {
+            id: id.to_string(),
+            url: format!("https://nyaa.si/view/{id}"),
+            info_hash: None,
+            created: None,
+            updated: None,
+            is_best: false,
+            dual_audio: false,
+            tags: Vec::new(),
+            tracker: "Nyaa".to_string(),
+            files: Vec::new(),
+        }
+    }
+
+    fn make_file(length: u64) -> TorrentFile {
+        TorrentFile {
+            length,
+            name: "video.mkv".to_string(),
+        }
+    }
+
+    fn make_entry(al_id: Option<i64>, trs: Vec<TorrentRecord>) -> EntryRecord {
+        EntryRecord {
+            al_id,
+            expand: Some(EntryExpand { trs }),
+        }
+    }
+
+    #[test]
+    fn parses_releases_base_url() {
+        ReleasesClient::new().expect("client construction must succeed");
+    }
+
+    #[test]
+    fn extracts_nyaa_id() {
+        assert_eq!(extract_nyaa_id("https://nyaa.si/view/12345"), Some("12345"));
+        assert_eq!(
+            extract_nyaa_id("https://nyaa.si/view/12345?foo=bar"),
+            Some("12345")
+        );
+        assert_eq!(
+            extract_nyaa_id("https://nyaa.si/view/12345#section"),
+            Some("12345")
+        );
+        assert_eq!(
+            extract_nyaa_id("https://nyaa.si/view/12345/extra"),
+            Some("12345")
+        );
+        assert_eq!(extract_nyaa_id("https://nyaa.si/view/abc"), None);
+        assert_eq!(extract_nyaa_id("https://nyaa.si/view/12a45"), None);
+        assert_eq!(extract_nyaa_id("https://nyaa.si/something/12345"), None);
+        assert_eq!(extract_nyaa_id(""), None);
+    }
+
+    #[test]
+    fn parses_timestamp() {
+        let parsed = parse_timestamp("2024-01-02T03:04:05Z").expect("rfc3339 must parse");
+        assert_eq!(parsed.year(), 2024);
+
+        let parsed = parse_timestamp("2024-01-02 03:04:05").expect("space-separated must parse");
+        let expected = OffsetDateTime::parse("2024-01-02T03:04:05Z", &Rfc3339).unwrap();
+        assert_eq!(parsed, expected);
+
+        assert!(parse_timestamp("not a timestamp").is_none());
+    }
+
+    #[test]
+    fn builds_torrent_from_record() {
+        let with_files = TorrentRecord {
+            files: vec![make_file(100), make_file(200), make_file(300)],
+            ..make_torrent_record("1")
+        };
+        assert_eq!(Torrent::from_record(with_files, None).size_bytes, 600);
+
+        let both_timestamps = TorrentRecord {
+            created: Some("2024-01-01T00:00:00Z".to_string()),
+            updated: Some("2024-02-02T00:00:00Z".to_string()),
+            ..make_torrent_record("1")
+        };
+        let updated = OffsetDateTime::parse("2024-02-02T00:00:00Z", &Rfc3339).unwrap();
+        assert_eq!(
+            Torrent::from_record(both_timestamps, None).published,
+            Some(updated)
+        );
+
+        let only_created = TorrentRecord {
+            created: Some("2024-01-01T00:00:00Z".to_string()),
+            updated: None,
+            ..make_torrent_record("1")
+        };
+        let created = OffsetDateTime::parse("2024-01-01T00:00:00Z", &Rfc3339).unwrap();
+        assert_eq!(
+            Torrent::from_record(only_created, None).published,
+            Some(created)
+        );
+
+        let with_nyaa_url = TorrentRecord {
+            url: "https://nyaa.si/view/9876".to_string(),
+            ..make_torrent_record("1")
+        };
+        let torrent = Torrent::from_record(with_nyaa_url, None);
+        assert_eq!(
+            torrent.download_url,
+            "https://nyaa.si/download/9876.torrent"
+        );
+        assert_eq!(torrent.source_url, "https://nyaa.si/view/9876");
+    }
+
+    #[test]
+    fn filters_entries_to_torrents() {
+        let with_other_tracker = vec![make_entry(
+            Some(42),
+            vec![
+                make_torrent_record("1"),
+                TorrentRecord {
+                    tracker: "AnimeBytes".to_string(),
+                    ..make_torrent_record("2")
+                },
+            ],
+        )];
+        let torrents = ReleasesClient::entries_to_torrents(with_other_tracker);
+        assert_eq!(torrents.len(), 1);
+        assert_eq!(torrents[0].id, "1");
+
+        let with_incomplete_tag = vec![make_entry(
+            Some(42),
+            vec![
+                make_torrent_record("1"),
+                TorrentRecord {
+                    tags: vec!["Incomplete".to_string()],
+                    ..make_torrent_record("2")
+                },
+            ],
+        )];
+        let torrents = ReleasesClient::entries_to_torrents(with_incomplete_tag);
+        assert_eq!(torrents.len(), 1);
+        assert_eq!(torrents[0].id, "1");
+
+        let with_bad_url = vec![make_entry(
+            Some(42),
+            vec![
+                make_torrent_record("1"),
+                TorrentRecord {
+                    url: "https://example.com/not-a-nyaa-link".to_string(),
+                    ..make_torrent_record("2")
+                },
+            ],
+        )];
+        let torrents = ReleasesClient::entries_to_torrents(with_bad_url);
+        assert_eq!(torrents.len(), 1);
+        assert_eq!(torrents[0].id, "1");
+
+        let single = vec![make_entry(Some(12345), vec![make_torrent_record("1")])];
+        let torrents = ReleasesClient::entries_to_torrents(single);
+        assert_eq!(torrents[0].anilist_id, Some(12345));
+    }
 }

@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, time::Duration};
 
 use axum::{
     Json, Router,
@@ -15,6 +15,9 @@ use tracing::{debug, info};
 use crate::service::ServiceError;
 use crate::torznab::{self, ChannelMetadata, TorznabItem};
 use crate::{AppState, SharedAppState};
+
+/// Timeout applied to every outbound HTTP client
+pub const TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn router(state: SharedAppState) -> Router {
     Router::new()
@@ -275,7 +278,6 @@ impl IntoResponse for HttpError {
                 ServiceError::Radarr(_) => {
                     (StatusCode::BAD_GATEWAY, Cow::from("Failed to query Radarr"))
                 }
-                ServiceError::Unsupported(msg) => (StatusCode::BAD_REQUEST, Cow::from(msg.clone())),
             },
             HttpError::Torznab(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
