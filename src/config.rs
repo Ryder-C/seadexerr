@@ -20,11 +20,13 @@ pub const DATA_PATH: &str = "data";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AnimePreference {
-    /// Use the release marked as best on releases.moe.
+    /// Use the release marked as Best on releases.moe
     #[default]
     Best,
-    /// Prefer releases that include dual audio tracks.
+    /// Prefer releases marked Dual Audio on releases.moe
     DualAudio,
+    /// Prefer releases with the smallest file size
+    Smallest,
 }
 
 #[derive(Deserialize)]
