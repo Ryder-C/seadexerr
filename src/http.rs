@@ -19,6 +19,13 @@ use crate::{AppState, SharedAppState};
 /// Timeout applied to every outbound HTTP client
 pub const TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Timeouts for the mappings download client. The shared [`TIMEOUT`] is a total
+/// request timeout, too tight for the large (~9 MB) mappings asset served via a
+/// redirect to GitHub's CDN. Instead we bound connect and per-read stalls, which
+/// lets a healthy-but-slow download run to completion.
+pub const MAPPINGS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub const MAPPINGS_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub fn router(state: SharedAppState) -> Router {
     Router::new()
         .route("/health", get(health))
