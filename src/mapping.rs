@@ -69,7 +69,8 @@ impl PlexAniBridgeMappings {
 
         let path = data_path.join("mappings.json");
         let client = Client::builder()
-            .timeout(http::TIMEOUT)
+            .connect_timeout(http::MAPPINGS_CONNECT_TIMEOUT)
+            .read_timeout(http::MAPPINGS_READ_TIMEOUT)
             .user_agent(format!("seadexerr/{}", env!("CARGO_PKG_VERSION")))
             .build()
             .context("failed to construct PlexAniBridge HTTP client")?;
