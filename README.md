@@ -33,7 +33,7 @@ Most can be left as default
 | `SEADEXERR_PORT`              | `6767`                                                               | TCP port Seadexerr binds to. Must be a valid `u16`.                               |
 | `SEADEXERR_PUBLIC_BASE_URL`   | (optional; falls back to `http://{SEADEXERR_HOST}:{SEADEXERR_PORT}`) | Base URL advertised in the Torznab feed. Set when running behind a reverse proxy. |
 | `SEADEXERR_SKIP_DEBAND`       | `false`                                                              | Skip releases with the `Deband Required` tag.                                     |
-| `SEADEXERR_PREFER_DUAL_AUDIO` | `false`                                                              | Prefer dual audio releases when multiple options are available.                   |
+| `SEADEXERR_PREFER`            | `best`                                                               | Release to prefer when multiple options are available: `best`, `dual_audio`, or `smallest`. |
 
 \* At least one of `SONARR_API_KEY` or `RADARR_API_KEY` must be provided. If only one is provided, the other service is disabled.
 
