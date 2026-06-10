@@ -7,6 +7,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use reqwest::Client;
 use serde::Deserialize;
 use serde_json::json;
 use thiserror::Error;
@@ -17,6 +18,20 @@ use crate::torznab::{self, ChannelMetadata, TorznabItem};
 
 /// Timeout applied to every outbound HTTP client
 pub const TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Builds the shared HTTP client used by the AniList, releases.moe, Sonarr, and
+/// Radarr clients. `reqwest::Client` is `Arc`-backed, so callers clone this once
+/// and share the underlying connection pool, DNS resolver, and TLS config.
+///
+/// The mappings client is intentionally excluded: it needs distinct connect and
+/// read timeouts (a longer read window for the ~9 MB asset) rather than the total
+/// [`TIMEOUT`] this client applies.
+pub fn client() -> reqwest::Result<Client> {
+    Client::builder()
+        .timeout(TIMEOUT)
+        .user_agent(format!("seadexerr/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+}
 
 /// Timeouts for the mappings download client. The shared [`TIMEOUT`] is a total
 /// request timeout, too tight for the large (~9 MB) mappings asset served via a

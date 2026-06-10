@@ -29,9 +29,13 @@ async fn main() -> anyhow::Result<()> {
     let config = AppConfig::from_env().context("failed to load configuration")?;
     let listen_addr = config.listen_addr;
 
-    let releases = ReleasesClient::new().context("failed to construct releases.moe client")?;
+    let http_client = http::client().context("failed to construct shared HTTP client")?;
 
-    let anilist = AniListClient::new().context("failed to construct AniList client")?;
+    let releases =
+        ReleasesClient::new(http_client.clone()).context("failed to construct releases.moe client")?;
+
+    let anilist =
+        AniListClient::new(http_client.clone()).context("failed to construct AniList client")?;
 
     let data_path = config::default_data_path();
 
@@ -41,7 +45,7 @@ async fn main() -> anyhow::Result<()> {
 
     let sonarr = if let Some(sonarr_config) = &config.sonarr {
         Some(
-            SonarrClient::new(sonarr_config.clone(), data_path.clone())
+            SonarrClient::new(http_client.clone(), sonarr_config.clone(), data_path.clone())
                 .context("failed to construct Sonarr client")?,
         )
     } else {
@@ -50,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
 
     let radarr = if let Some(radarr_config) = &config.radarr {
         Some(
-            RadarrClient::new(radarr_config.clone(), data_path)
+            RadarrClient::new(http_client, radarr_config.clone(), data_path)
                 .context("failed to construct Radarr client")?,
         )
     } else {

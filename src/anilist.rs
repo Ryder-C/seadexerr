@@ -28,11 +28,7 @@ pub struct AniListClient {
 }
 
 impl AniListClient {
-    pub fn new() -> anyhow::Result<Self> {
-        let http = Client::builder()
-            .user_agent(format!("seadexerr/{}", env!("CARGO_PKG_VERSION")))
-            .build()?;
-
+    pub fn new(http: Client) -> anyhow::Result<Self> {
         let base_url = Url::parse(ANILIST_BASE_URL)?;
 
         Ok(Self { http, base_url })

@@ -7,8 +7,6 @@ use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tracing::trace;
 
-use crate::http;
-
 const RELEASES_BASE_URL: &str = "https://releases.moe/api/";
 const PAGE_SIZE: usize = 100;
 const DEBAND_TAG: &str = "Deband Required";
@@ -20,12 +18,7 @@ pub struct ReleasesClient {
 }
 
 impl ReleasesClient {
-    pub fn new() -> Result<Self> {
-        let http = Client::builder()
-            .timeout(http::TIMEOUT)
-            .user_agent(format!("seadexerr/{}", env!("CARGO_PKG_VERSION")))
-            .build()?;
-
+    pub fn new(http: Client) -> Result<Self> {
         let base_url = Url::parse(RELEASES_BASE_URL)?;
 
         Ok(Self { http, base_url })
@@ -345,7 +338,8 @@ mod tests {
 
     #[test]
     fn parses_releases_base_url() {
-        ReleasesClient::new().expect("client construction must succeed");
+        ReleasesClient::new(crate::http::client().unwrap())
+            .expect("client construction must succeed");
     }
 
     #[test]

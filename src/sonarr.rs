@@ -12,7 +12,7 @@ use tokio::sync::RwLock;
 use tokio::task;
 use tracing::{trace, warn};
 
-use crate::{config::SonarrConfig, http};
+use crate::config::SonarrConfig;
 
 const CACHE_FILENAME: &str = "sonarr_titles.json";
 
@@ -25,12 +25,7 @@ pub struct SonarrClient {
 }
 
 impl SonarrClient {
-    pub fn new(config: SonarrConfig, data_path: PathBuf) -> anyhow::Result<Self> {
-        let http = Client::builder()
-            .timeout(http::TIMEOUT)
-            .user_agent(format!("seadexerr/{}", env!("CARGO_PKG_VERSION")))
-            .build()?;
-
+    pub fn new(http: Client, config: SonarrConfig, data_path: PathBuf) -> anyhow::Result<Self> {
         let cache_path = data_path.join(CACHE_FILENAME);
 
         let cache = load_cache(&cache_path)?;
@@ -275,8 +270,12 @@ mod tests {
     }
 
     fn make_client(dir: &TempDir) -> SonarrClient {
-        SonarrClient::new(make_config(), dir.path().to_path_buf())
-            .expect("client construction must succeed")
+        SonarrClient::new(
+            crate::http::client().unwrap(),
+            make_config(),
+            dir.path().to_path_buf(),
+        )
+        .expect("client construction must succeed")
     }
 
     #[test]
