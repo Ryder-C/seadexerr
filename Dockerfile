@@ -1,9 +1,13 @@
-FROM rust:1.95-slim
-
+FROM rust:1.96-slim-bookworm AS builder
 WORKDIR /app
-COPY Cargo.toml Cargo.lock /app/
-COPY src /app/src
 
-RUN cargo install --path .
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --release && rm -rf src
 
-CMD ["seadexerr"]
+COPY src ./src
+RUN touch src/main.rs && cargo build --release
+
+FROM gcr.io/distroless/cc-debian12
+COPY --from=builder /app/target/release/seadexerr /usr/local/bin/seadexerr
+
+CMD ["/usr/local/bin/seadexerr"]
