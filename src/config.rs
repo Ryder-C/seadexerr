@@ -68,8 +68,6 @@ impl TryFrom<EnvConfig> for AppConfig {
 
         let listen_addr = SocketAddr::new(seadexerr_host, seadexerr_port);
 
-        let public_base_url = seadexerr_public_base_url;
-
         let sonarr = sonarr_api_key.map(|api_key| SonarrConfig {
             url: sonarr_base_url,
             api_key,
@@ -92,7 +90,7 @@ impl TryFrom<EnvConfig> for AppConfig {
 
         Ok(AppConfig {
             listen_addr,
-            public_base_url,
+            public_base_url: seadexerr_public_base_url,
             sonarr,
             radarr,
             scoring,

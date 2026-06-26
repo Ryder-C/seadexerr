@@ -131,16 +131,12 @@ impl ReleasesClient {
         }
 
         let unique: HashSet<String> = torrent_ids.iter().cloned().collect();
-        if unique.is_empty() {
-            return Ok(result);
-        }
-
         let mut unique_ids: Vec<String> = unique.into_iter().collect();
         unique_ids.sort_unstable();
 
         const CHUNK_SIZE: usize = 20;
 
-        for chunk in unique_ids.chunks(CHUNK_SIZE.max(1)) {
+        for chunk in unique_ids.chunks(CHUNK_SIZE) {
             let filter = chunk
                 .iter()
                 .map(|id| format!("(trs~'{}')", id))

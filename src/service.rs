@@ -626,12 +626,11 @@ impl SearchService {
     }
 
     fn is_excluded(&self, release: &Torrent) -> bool {
-        if self.config.scoring.is_excluded(&release.tags) {
+        let excluded = self.config.scoring.is_excluded(&release.tags);
+        if excluded {
             trace!(torrent_id = %release.id, "excluding torrent due to excluded tag");
-            true
-        } else {
-            false
         }
+        excluded
     }
 
     fn build_torznab_item(
