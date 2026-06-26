@@ -4,6 +4,7 @@ mod http;
 mod mapping;
 mod radarr;
 mod releases;
+mod scoring;
 mod service;
 mod sonarr;
 mod torznab;

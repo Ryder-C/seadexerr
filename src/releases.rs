@@ -9,7 +9,6 @@ use tracing::trace;
 
 const RELEASES_BASE_URL: &str = "https://releases.moe/api/";
 const PAGE_SIZE: usize = 100;
-const DEBAND_TAG: &str = "Deband Required";
 
 #[derive(Debug, Clone)]
 pub struct ReleasesClient {
@@ -224,10 +223,6 @@ pub struct Torrent {
 }
 
 impl Torrent {
-    pub fn is_deband(&self) -> bool {
-        self.tags.iter().any(|tag| tag == DEBAND_TAG)
-    }
-
     fn from_record(
         record: TorrentRecord,
         anilist_id: Option<i64>,

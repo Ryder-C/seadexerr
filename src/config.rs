@@ -1,8 +1,3 @@
-//! Application configuration loaded from environment variables.
-//!
-//! At least one of `SONARR_API_KEY` or `RADARR_API_KEY` must be set, everything
-//! else has a default.
-
 use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
@@ -12,22 +7,11 @@ use anyhow::{Result, bail};
 use reqwest::Url;
 use serde::Deserialize;
 
+use crate::scoring::{LegacyPreference, ScoringConfig};
+
 pub const APPLICATION_TITLE: &str = "Seadexerr";
 pub const APPLICATION_DESCRIPTION: &str = "Indexer bridge for releases.moe";
 pub const DATA_PATH: &str = "data";
-
-/// How to pick between multiple eligible releases for the same entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum AnimePreference {
-    /// Use the release marked as Best on releases.moe
-    #[default]
-    Best,
-    /// Prefer releases marked Dual Audio on releases.moe
-    DualAudio,
-    /// Prefer releases with the smallest file size
-    Smallest,
-}
 
 #[derive(Deserialize)]
 struct EnvConfig {
@@ -42,13 +26,11 @@ struct EnvConfig {
     radarr_api_key: Option<String>,
     #[serde(default = "default_radarr_url")]
     radarr_base_url: Url,
-
-    // Extra configuration
-    #[serde(default)]
-    seadexerr_skip_deband: bool,
-    #[serde(default)]
-    seadexerr_prefer: AnimePreference,
     ab_passkey: Option<String>,
+
+    // Deprecated, kept only to migrate setups without a scoring.toml.
+    seadexerr_skip_deband: Option<bool>,
+    seadexerr_prefer: Option<LegacyPreference>,
 }
 
 #[derive(Clone, Debug)]
@@ -57,8 +39,7 @@ pub struct AppConfig {
     pub public_base_url: Option<Url>,
     pub sonarr: Option<SonarrConfig>,
     pub radarr: Option<RadarrConfig>,
-    pub skip_deband: bool,
-    pub preference: AnimePreference,
+    pub scoring: ScoringConfig,
     pub ab_passkey: Option<String>,
 }
 
@@ -99,21 +80,22 @@ impl TryFrom<EnvConfig> for AppConfig {
             api_key,
         });
 
-        let skip_deband = seadexerr_skip_deband;
-
-        let preference = seadexerr_prefer;
-
         if sonarr.is_none() && radarr.is_none() {
             bail!("at least one of Sonarr or Radarr configuration must be provided");
         }
+
+        let scoring = ScoringConfig::load(
+            &default_data_path(),
+            seadexerr_prefer,
+            seadexerr_skip_deband,
+        )?;
 
         Ok(AppConfig {
             listen_addr,
             public_base_url,
             sonarr,
             radarr,
-            skip_deband,
-            preference,
+            scoring,
             ab_passkey,
         })
     }
@@ -164,8 +146,8 @@ mod tests {
             sonarr_base_url: default_sonarr_url(),
             radarr_api_key: None,
             radarr_base_url: default_radarr_url(),
-            seadexerr_skip_deband: false,
-            seadexerr_prefer: AnimePreference::Best,
+            seadexerr_skip_deband: None,
+            seadexerr_prefer: None,
             ab_passkey: None,
         }
     }
