@@ -22,19 +22,6 @@ use crate::releases::ReleasesClient;
 use crate::service::SearchService;
 use crate::sonarr::SonarrClient;
 
-#[derive(Clone)]
-pub struct AppState {
-    pub config: AppConfig,
-    pub anilist: AniListClient,
-    pub sonarr: Option<SonarrClient>,
-    pub radarr: Option<RadarrClient>,
-    pub releases: ReleasesClient,
-    pub mappings: PlexAniBridgeMappings,
-    pub service: Arc<SearchService>,
-}
-
-pub type SharedAppState = Arc<AppState>;
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_tracing();
@@ -70,24 +57,10 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    let service = Arc::new(SearchService::new(
-        anilist.clone(),
-        sonarr.clone(),
-        radarr.clone(),
-        releases.clone(),
-        mappings.clone(),
-        config.clone(),
+    let state = Arc::new(SearchService::new(
+        anilist, sonarr, radarr, releases, mappings, config,
     ));
 
-    let state = Arc::new(AppState {
-        config,
-        anilist,
-        sonarr,
-        radarr,
-        releases,
-        mappings,
-        service,
-    });
     let app = http::router(state.clone());
 
     let listener = TcpListener::bind(listen_addr)

@@ -1,4 +1,4 @@
-use std::{borrow::Cow, time::Duration};
+use std::{borrow::Cow, sync::Arc, time::Duration};
 
 use axum::{
     Json, Router,
@@ -12,9 +12,8 @@ use serde_json::json;
 use thiserror::Error;
 use tracing::{debug, info};
 
-use crate::service::ServiceError;
+use crate::service::{SearchService, ServiceError};
 use crate::torznab::{self, ChannelMetadata, TorznabItem};
-use crate::{AppState, SharedAppState};
 
 /// Timeout applied to every outbound HTTP client
 pub const TIMEOUT: Duration = Duration::from_secs(10);
@@ -26,7 +25,7 @@ pub const TIMEOUT: Duration = Duration::from_secs(10);
 pub const MAPPINGS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const MAPPINGS_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub fn router(state: SharedAppState) -> Router {
+pub fn router(state: Arc<SearchService>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api", get(torznab_handler))
@@ -162,7 +161,7 @@ enum TorznabOperation<'a> {
 }
 
 async fn torznab_handler(
-    State(state): State<SharedAppState>,
+    State(state): State<Arc<SearchService>>,
     Query(query): Query<TorznabQuery>,
 ) -> Result<TorznabResponse, HttpError> {
     let operation = query.operation();
@@ -175,7 +174,6 @@ async fn torznab_handler(
         }
         TorznabOperation::Search => {
             let (items, total) = state
-                .service
                 .search_generic(query.query, query.cat, query.limit, query.offset)
                 .await?;
             Ok(TorznabResponse::new(
@@ -192,7 +190,6 @@ async fn torznab_handler(
             if let (Some(tvdb_id), Some(season)) = (tvdb_id, season) {
                 info!(tvdb_id, season, "handling tv search");
                 let (items, total) = state
-                    .service
                     .search_tv(tvdb_id, season, query.limit, query.offset)
                     .await?;
                 Ok(TorznabResponse::new(
@@ -210,7 +207,6 @@ async fn torznab_handler(
             if let Some(tmdb_id) = query.tmdb_identifier() {
                 info!(tmdb_id, "handling movie search");
                 let (items, total) = state
-                    .service
                     .search_movie(tmdb_id, query.limit, query.offset)
                     .await?;
                 Ok(TorznabResponse::new(
@@ -230,7 +226,7 @@ async fn torznab_handler(
     }
 }
 
-fn build_channel_metadata(state: &AppState) -> Result<ChannelMetadata, HttpError> {
+fn build_channel_metadata(state: &SearchService) -> Result<ChannelMetadata, HttpError> {
     let base = match state.config.public_base_url.clone() {
         Some(url) => url,
         None => url::Url::parse(&format!("http://{}", state.config.listen_addr))
