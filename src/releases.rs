@@ -261,8 +261,6 @@ struct TorrentRecord {
 #[derive(Debug, Clone, Deserialize)]
 pub struct TorrentFile {
     pub length: u64,
-    #[serde(rename = "name")]
-    pub name: String,
 }
 
 fn parse_timestamp(value: &str) -> Option<OffsetDateTime> {
@@ -323,10 +321,7 @@ mod tests {
     }
 
     fn make_file(length: u64) -> TorrentFile {
-        TorrentFile {
-            length,
-            name: "video.mkv".to_string(),
-        }
+        TorrentFile { length }
     }
 
     fn make_entry(al_id: Option<i64>, trs: Vec<TorrentRecord>) -> EntryRecord {

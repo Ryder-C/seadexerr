@@ -481,46 +481,6 @@ impl PlexAniBridgeMappings {
         Ok(None)
     }
 
-    pub async fn resolve_anilist_id_for_tvdb(&self, tvdb_id: i64) -> Result<Option<i64>> {
-        let mappings = self.load_mappings().await?;
-        let Some(entries) = mappings.tvdb_to_entries.get(&tvdb_id) else {
-            trace!(tvdb_id, "no entries found for tvdb id");
-            return Ok(None);
-        };
-
-        let mut best: Option<(i64, u32)> = None;
-        for entry in entries {
-            let mut seasons: Vec<u32> = entry
-                .seasons
-                .iter()
-                .filter_map(|key| parse_season_key(key))
-                .collect();
-
-            let season = if seasons.is_empty() {
-                u32::MAX
-            } else {
-                seasons.sort_unstable();
-                seasons[0]
-            };
-
-            match best {
-                Some((_, best_season)) if season >= best_season => {}
-                _ => best = Some((entry.anilist_id, season)),
-            }
-        }
-
-        if let Some((anilist_id, season)) = best {
-            trace!(
-                tvdb_id,
-                anilist_id, season, "selected mapping for tv search"
-            );
-            return Ok(Some(anilist_id));
-        }
-
-        trace!(tvdb_id, "failed to select mapping for movie search");
-        Ok(None)
-    }
-
     pub async fn resolve_anilist_id_for_tmdb(&self, tmdb_id: i64) -> Result<Option<i64>> {
         let mappings = self.load_mappings().await?;
         if let Some(anilist_id) = mappings.tmdb_to_anilist.get(&tmdb_id) {

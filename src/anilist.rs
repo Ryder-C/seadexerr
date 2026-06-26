@@ -90,10 +90,7 @@ impl AniListClient {
                     continue;
                 };
 
-                result.entry(media.id).or_insert(AniListMedia {
-                    id: media.id,
-                    format,
-                });
+                result.entry(media.id).or_insert(AniListMedia { format });
             }
 
             trace!(ids = chunk.len(), matches, "fetched AniList media batch");
@@ -122,7 +119,6 @@ pub enum MediaFormat {
 
 #[derive(Debug, Clone)]
 pub struct AniListMedia {
-    pub id: i64,
     pub format: MediaFormat,
 }
 
