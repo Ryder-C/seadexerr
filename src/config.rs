@@ -48,6 +48,7 @@ struct EnvConfig {
     seadexerr_skip_deband: bool,
     #[serde(default)]
     seadexerr_prefer: AnimePreference,
+    ab_passkey: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -58,6 +59,7 @@ pub struct AppConfig {
     pub radarr: Option<RadarrConfig>,
     pub skip_deband: bool,
     pub preference: AnimePreference,
+    pub ab_passkey: Option<String>,
 }
 
 impl AppConfig {
@@ -80,6 +82,7 @@ impl TryFrom<EnvConfig> for AppConfig {
             radarr_base_url,
             seadexerr_skip_deband,
             seadexerr_prefer,
+            ab_passkey,
         } = env_config;
 
         let listen_addr = SocketAddr::new(seadexerr_host, seadexerr_port);
@@ -100,6 +103,8 @@ impl TryFrom<EnvConfig> for AppConfig {
 
         let preference = seadexerr_prefer;
 
+        let ab_passkey = ab_passkey;
+
         if sonarr.is_none() && radarr.is_none() {
             bail!("at least one of Sonarr or Radarr configuration must be provided");
         }
@@ -111,6 +116,7 @@ impl TryFrom<EnvConfig> for AppConfig {
             radarr,
             skip_deband,
             preference,
+            ab_passkey,
         })
     }
 }
@@ -162,6 +168,7 @@ mod tests {
             radarr_base_url: default_radarr_url(),
             seadexerr_skip_deband: false,
             seadexerr_prefer: AnimePreference::Best,
+            ab_passkey: None,
         }
     }
 

@@ -15,13 +15,19 @@ const DEBAND_TAG: &str = "Deband Required";
 pub struct ReleasesClient {
     http: Client,
     base_url: Url,
+    ab_passkey: Option<String>,
 }
 
 impl ReleasesClient {
-    pub fn new(http: Client) -> Result<Self> {
+    pub fn new(http: Client, ab_passkey: Option<&str>) -> Result<Self> {
         let base_url = Url::parse(RELEASES_BASE_URL)?;
 
-        Ok(Self { http, base_url })
+        let ab_passkey = ab_passkey.map(|k| k.to_string());
+        Ok(Self {
+            http,
+            base_url,
+            ab_passkey,
+        })
     }
 
     pub async fn search_torrents(&self, anilist_id: i64) -> Result<Vec<Torrent>, ReleasesError> {
@@ -34,7 +40,7 @@ impl ReleasesClient {
             })
             .await?;
 
-        let torrents = Self::entries_to_torrents(payload.items);
+        let torrents = Self::entries_to_torrents(payload.items, self.ab_passkey.as_deref());
 
         trace!(
             anilist_id,
@@ -53,7 +59,7 @@ impl ReleasesClient {
             })
             .await?;
 
-        let torrents = Self::entries_to_torrents(payload.items);
+        let torrents = Self::entries_to_torrents(payload.items, self.ab_passkey.as_deref());
 
         trace!(
             feed = "recent-public",
@@ -93,7 +99,8 @@ impl ReleasesClient {
         Ok(payload)
     }
 
-    fn entries_to_torrents(entries: Vec<EntryRecord>) -> Vec<Torrent> {
+    fn entries_to_torrents(entries: Vec<EntryRecord>, ab_passkey: Option<&str>) -> Vec<Torrent> {
+        let ab_enabled = ab_passkey.is_some();
         entries
             .into_iter()
             .flat_map(|entry| {
@@ -102,10 +109,14 @@ impl ReleasesClient {
                     expand.trs.into_iter().map(move |record| (al_id, record))
                 })
             })
-            .filter(|(_, record)| record.tracker == "Nyaa")
+            .filter(|(_, record)| {
+                record.tracker == "Nyaa" || (ab_enabled && record.tracker == "AB")
+            })
             .filter(|(_, record)| !record.tags.contains(&"Incomplete".to_string()))
-            .filter(|(_, record)| rewritten_download_url(record).is_some())
-            .map(|(al_id, record)| Torrent::from_record(record, al_id))
+            .filter_map(|(al_id, record)| {
+                let download_url = rewritten_download_url(&record, ab_passkey)?;
+                Some(Torrent::from_record(record, al_id, download_url))
+            })
             .collect()
     }
 
@@ -161,7 +172,7 @@ impl ReleasesClient {
                 let Some(al_id) = entry.al_id else { continue };
 
                 for record in expand.trs {
-                    if record.tracker != "Nyaa" {
+                    if record.tracker != "Nyaa" && record.tracker != "AB" {
                         continue;
                     }
 
@@ -207,6 +218,7 @@ pub struct Torrent {
     pub dual_audio: bool,
     pub tags: Vec<String>,
     pub anilist_id: Option<i64>,
+    pub tracker: String,
 }
 
 impl Torrent {
@@ -214,10 +226,9 @@ impl Torrent {
         self.tags.iter().any(|tag| tag == DEBAND_TAG)
     }
 
-    fn from_record(record: TorrentRecord, anilist_id: Option<i64>) -> Self {
-        let download_url = rewritten_download_url(&record).unwrap_or_else(|| record.url.clone());
+    fn from_record(record: TorrentRecord, anilist_id: Option<i64>, download_url: String) -> Self {
         let source_url = record.url.clone();
-
+        let tracker = record.tracker.clone();
         let size_bytes = record.files.iter().map(|f| f.length).sum::<u64>();
         Torrent {
             id: record.id,
@@ -235,6 +246,7 @@ impl Torrent {
             tags: record.tags,
             anilist_id,
             source_url,
+            tracker,
         }
     }
 }
@@ -276,15 +288,28 @@ fn parse_timestamp(value: &str) -> Option<OffsetDateTime> {
     OffsetDateTime::parse(&normalized, &Rfc3339).ok()
 }
 
-fn rewritten_download_url(record: &TorrentRecord) -> Option<String> {
-    extract_nyaa_id(record.url.as_str()).map(|id| format!("https://nyaa.si/download/{id}.torrent"))
+fn rewritten_download_url(record: &TorrentRecord, ab_passkey: Option<&str>) -> Option<String> {
+    if record.tracker == "AB" {
+        let passkey = ab_passkey?;
+        let id = extract_id(record.url.as_str(), Some(&record.tracker))?;
+        Some(format!(
+            "https://animebytes.tv/download.php?id={id}&passkey={passkey}"
+        ))
+    } else {
+        let id = extract_id(record.url.as_str(), None)?;
+        Some(format!("https://nyaa.si/download/{id}.torrent"))
+    }
 }
 
-fn extract_nyaa_id(url: &str) -> Option<&str> {
-    let needle = "/view/";
+fn extract_id<'a>(url: &'a str, tracker: Option<&str>) -> Option<&'a str> {
+    let needle = if tracker == Some("AB") {
+        "torrentid="
+    } else {
+        "/view/"
+    };
     let start = url.find(needle)? + needle.len();
     let rest = &url[start..];
-    let id = rest.split(['?', '#', '/']).next().unwrap_or("");
+    let id = rest.split(['?', '#', '/', '&']).next().unwrap_or("");
     if id.is_empty() || !id.chars().all(|ch| ch.is_ascii_digit()) {
         return None;
     }
@@ -320,6 +345,21 @@ mod tests {
         }
     }
 
+    fn make_ab_torrent_record(id: &str, torrentid: &str) -> TorrentRecord {
+        TorrentRecord {
+            id: id.to_string(),
+            url: format!("/torrents.php?id={}&torrentid={}", id, torrentid),
+            info_hash: None,
+            created: None,
+            updated: None,
+            is_best: false,
+            dual_audio: false,
+            tags: Vec::new(),
+            tracker: "AB".to_string(),
+            files: Vec::new(),
+        }
+    }
+
     fn make_file(length: u64) -> TorrentFile {
         TorrentFile { length }
     }
@@ -333,29 +373,56 @@ mod tests {
 
     #[test]
     fn parses_releases_base_url() {
-        ReleasesClient::new(crate::http::client().unwrap())
+        ReleasesClient::new(crate::http::client().unwrap(), None)
             .expect("client construction must succeed");
     }
 
     #[test]
     fn extracts_nyaa_id() {
-        assert_eq!(extract_nyaa_id("https://nyaa.si/view/12345"), Some("12345"));
         assert_eq!(
-            extract_nyaa_id("https://nyaa.si/view/12345?foo=bar"),
+            extract_id("https://nyaa.si/view/12345", None),
             Some("12345")
         );
         assert_eq!(
-            extract_nyaa_id("https://nyaa.si/view/12345#section"),
+            extract_id("https://nyaa.si/view/12345?foo=bar", None),
             Some("12345")
         );
         assert_eq!(
-            extract_nyaa_id("https://nyaa.si/view/12345/extra"),
+            extract_id("https://nyaa.si/view/12345#section", None),
             Some("12345")
         );
-        assert_eq!(extract_nyaa_id("https://nyaa.si/view/abc"), None);
-        assert_eq!(extract_nyaa_id("https://nyaa.si/view/12a45"), None);
-        assert_eq!(extract_nyaa_id("https://nyaa.si/something/12345"), None);
-        assert_eq!(extract_nyaa_id(""), None);
+        assert_eq!(
+            extract_id("https://nyaa.si/view/12345/extra", None),
+            Some("12345")
+        );
+        assert_eq!(extract_id("https://nyaa.si/view/abc", None), None);
+        assert_eq!(extract_id("https://nyaa.si/view/12a45", None), None);
+        assert_eq!(extract_id("https://nyaa.si/something/12345", None), None);
+        assert_eq!(extract_id("", None), None);
+    }
+
+    #[test]
+    fn extracts_ab_torrent_id() {
+        assert_eq!(
+            extract_id("/torrents.php?id=70543&torrentid=1143533", Some("AB")),
+            Some("1143533")
+        );
+        assert_eq!(
+            extract_id(
+                "/torrents.php?id=70543&torrentid=1143533&extra=1",
+                Some("AB")
+            ),
+            Some("1143533")
+        );
+        assert_eq!(
+            extract_id(
+                "/torrents.php?id=70543&torrentid=1143533#section",
+                Some("AB")
+            ),
+            Some("1143533")
+        );
+        assert_eq!(extract_id("/torrents.php?id=70543", Some("AB")), None);
+        assert_eq!(extract_id("", Some("AB")), None);
     }
 
     #[test]
@@ -376,7 +443,11 @@ mod tests {
             files: vec![make_file(100), make_file(200), make_file(300)],
             ..make_torrent_record("1")
         };
-        assert_eq!(Torrent::from_record(with_files, None).size_bytes, 600);
+        let download_url = "https://nyaa.si/download/1.torrent".to_string();
+        assert_eq!(
+            Torrent::from_record(with_files, None, download_url).size_bytes,
+            600
+        );
 
         let both_timestamps = TorrentRecord {
             created: Some("2024-01-01T00:00:00Z".to_string()),
@@ -384,8 +455,9 @@ mod tests {
             ..make_torrent_record("1")
         };
         let updated = OffsetDateTime::parse("2024-02-02T00:00:00Z", &Rfc3339).unwrap();
+        let download_url = "https://nyaa.si/download/1.torrent".to_string();
         assert_eq!(
-            Torrent::from_record(both_timestamps, None).published,
+            Torrent::from_record(both_timestamps, None, download_url).published,
             Some(updated)
         );
 
@@ -395,8 +467,9 @@ mod tests {
             ..make_torrent_record("1")
         };
         let created = OffsetDateTime::parse("2024-01-01T00:00:00Z", &Rfc3339).unwrap();
+        let download_url = "https://nyaa.si/download/1.torrent".to_string();
         assert_eq!(
-            Torrent::from_record(only_created, None).published,
+            Torrent::from_record(only_created, None, download_url).published,
             Some(created)
         );
 
@@ -404,12 +477,21 @@ mod tests {
             url: "https://nyaa.si/view/9876".to_string(),
             ..make_torrent_record("1")
         };
-        let torrent = Torrent::from_record(with_nyaa_url, None);
-        assert_eq!(
-            torrent.download_url,
-            "https://nyaa.si/download/9876.torrent"
-        );
+        let download_url = "https://nyaa.si/download/9876.torrent".to_string();
+        let torrent = Torrent::from_record(with_nyaa_url, None, download_url.clone());
+        assert_eq!(torrent.download_url, download_url);
         assert_eq!(torrent.source_url, "https://nyaa.si/view/9876");
+        assert_eq!(torrent.tracker, "Nyaa");
+
+        let with_ab_url = make_ab_torrent_record("70543", "1143533");
+        let ab_download_url =
+            "https://animebytes.tv/download.php?id=1143533&passkey=test".to_string();
+        let torrent = Torrent::from_record(with_ab_url, None, ab_download_url);
+        assert_eq!(torrent.tracker, "AB");
+        assert_eq!(
+            torrent.source_url,
+            "/torrents.php?id=70543&torrentid=1143533"
+        );
     }
 
     #[test]
@@ -424,7 +506,7 @@ mod tests {
                 },
             ],
         )];
-        let torrents = ReleasesClient::entries_to_torrents(with_other_tracker);
+        let torrents = ReleasesClient::entries_to_torrents(with_other_tracker, None);
         assert_eq!(torrents.len(), 1);
         assert_eq!(torrents[0].id, "1");
 
@@ -438,7 +520,7 @@ mod tests {
                 },
             ],
         )];
-        let torrents = ReleasesClient::entries_to_torrents(with_incomplete_tag);
+        let torrents = ReleasesClient::entries_to_torrents(with_incomplete_tag, None);
         assert_eq!(torrents.len(), 1);
         assert_eq!(torrents[0].id, "1");
 
@@ -452,12 +534,48 @@ mod tests {
                 },
             ],
         )];
-        let torrents = ReleasesClient::entries_to_torrents(with_bad_url);
+        let torrents = ReleasesClient::entries_to_torrents(with_bad_url, None);
         assert_eq!(torrents.len(), 1);
         assert_eq!(torrents[0].id, "1");
 
         let single = vec![make_entry(Some(12345), vec![make_torrent_record("1")])];
-        let torrents = ReleasesClient::entries_to_torrents(single);
+        let torrents = ReleasesClient::entries_to_torrents(single, None);
         assert_eq!(torrents[0].anilist_id, Some(12345));
+    }
+
+    #[test]
+    fn ab_entries_included_with_passkey() {
+        let entries = vec![make_entry(
+            Some(42),
+            vec![
+                make_torrent_record("1"),
+                make_ab_torrent_record("70543", "1143533"),
+            ],
+        )];
+        let torrents = ReleasesClient::entries_to_torrents(entries, Some("testkey"));
+        assert_eq!(torrents.len(), 2);
+        assert_eq!(torrents[0].tracker, "Nyaa");
+        assert_eq!(torrents[1].tracker, "AB");
+        assert!(
+            torrents[1]
+                .download_url
+                .contains("animebytes.tv/download.php")
+        );
+        assert!(torrents[1].download_url.contains("id=1143533"));
+        assert!(torrents[1].download_url.contains("passkey=testkey"));
+    }
+
+    #[test]
+    fn ab_entries_excluded_without_passkey() {
+        let entries = vec![make_entry(
+            Some(42),
+            vec![
+                make_torrent_record("1"),
+                make_ab_torrent_record("70543", "1143533"),
+            ],
+        )];
+        let torrents = ReleasesClient::entries_to_torrents(entries, None);
+        assert_eq!(torrents.len(), 1);
+        assert_eq!(torrents[0].tracker, "Nyaa");
     }
 }

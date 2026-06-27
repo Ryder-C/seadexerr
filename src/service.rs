@@ -13,6 +13,15 @@ use tracing::{debug, info, trace, warn};
 /// Upper bound on items returned in a single torznab response.
 const MAX_RESPONSE_ITEMS: usize = 100;
 
+fn priority_seeders(tracker: &str, preferred: bool) -> u32 {
+    match (tracker, preferred) {
+        ("AB", true) => 10000,
+        ("AB", false) => 100,
+        (_, true) => 1000,
+        _ => 10,
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum ServiceError {
     #[error("{0:#}")]
@@ -584,7 +593,10 @@ impl SearchService {
         torrents
             .into_iter()
             .filter(|release| !self.skip_due_to_deband(release))
-            .map(|release| self.build_torznab_item(release, title.clone(), categories.clone(), 100))
+            .map(|release| {
+                let seeders = priority_seeders(&release.tracker, release.is_best);
+                self.build_torznab_item(release, title.clone(), categories.clone(), seeders)
+            })
             .collect()
     }
 
@@ -605,7 +617,7 @@ impl SearchService {
             .into_iter()
             .zip(priorities)
             .map(|(release, preferred)| {
-                let seeders = if preferred { 1000 } else { 100 };
+                let seeders = priority_seeders(&release.tracker, preferred);
                 self.build_torznab_item(release, title.clone(), categories.clone(), seeders)
             })
             .collect()
