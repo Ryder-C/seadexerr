@@ -45,8 +45,12 @@ async fn main() -> anyhow::Result<()> {
 
     let sonarr = if let Some(sonarr_config) = &config.sonarr {
         Some(
-            SonarrClient::new(http_client.clone(), sonarr_config.clone(), data_path.clone())
-                .context("failed to construct Sonarr client")?,
+            SonarrClient::new(
+                http_client.clone(),
+                sonarr_config.clone(),
+                data_path.clone(),
+            )
+            .context("failed to construct Sonarr client")?,
         )
     } else {
         None

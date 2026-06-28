@@ -103,8 +103,6 @@ impl TryFrom<EnvConfig> for AppConfig {
 
         let preference = seadexerr_prefer;
 
-        let ab_passkey = ab_passkey;
-
         if sonarr.is_none() && radarr.is_none() {
             bail!("at least one of Sonarr or Radarr configuration must be provided");
         }
