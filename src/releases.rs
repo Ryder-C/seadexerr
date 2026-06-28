@@ -227,7 +227,11 @@ impl Torrent {
     }
 
     fn from_record(record: TorrentRecord, anilist_id: Option<i64>, download_url: String) -> Self {
-        let source_url = record.url.clone();
+        let source_url = if record.tracker == "AB" && record.url.starts_with('/') {
+            format!("https://animebytes.tv{}", record.url)
+        } else {
+            record.url.clone()
+        };
         let tracker = record.tracker.clone();
         let size_bytes = record.files.iter().map(|f| f.length).sum::<u64>();
         Torrent {
@@ -291,9 +295,9 @@ fn parse_timestamp(value: &str) -> Option<OffsetDateTime> {
 fn rewritten_download_url(record: &TorrentRecord, ab_passkey: Option<&str>) -> Option<String> {
     if record.tracker == "AB" {
         let passkey = ab_passkey?;
-        let id = extract_id(record.url.as_str(), Some(&record.tracker))?;
+        let torrentid = extract_id(record.url.as_str(), Some(&record.tracker))?;
         Some(format!(
-            "https://animebytes.tv/download.php?id={id}&passkey={passkey}"
+            "https://animebytes.tv/torrent/{torrentid}/download/{passkey}"
         ))
     } else {
         let id = extract_id(record.url.as_str(), None)?;
@@ -485,12 +489,12 @@ mod tests {
 
         let with_ab_url = make_ab_torrent_record("70543", "1143533");
         let ab_download_url =
-            "https://animebytes.tv/download.php?id=1143533&passkey=test".to_string();
+            "https://animebytes.tv/torrent/1143533/download/test".to_string();
         let torrent = Torrent::from_record(with_ab_url, None, ab_download_url);
         assert_eq!(torrent.tracker, "AB");
         assert_eq!(
             torrent.source_url,
-            "/torrents.php?id=70543&torrentid=1143533"
+            "https://animebytes.tv/torrents.php?id=70543&torrentid=1143533"
         );
     }
 
@@ -559,10 +563,8 @@ mod tests {
         assert!(
             torrents[1]
                 .download_url
-                .contains("animebytes.tv/download.php")
+                .contains("animebytes.tv/torrent/1143533/download/testkey")
         );
-        assert!(torrents[1].download_url.contains("id=1143533"));
-        assert!(torrents[1].download_url.contains("passkey=testkey"));
     }
 
     #[test]
