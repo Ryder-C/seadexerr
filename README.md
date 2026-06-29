@@ -17,36 +17,30 @@ services:
       - SONARR_API_KEY=<your api key here>
       - RADARR_BASE_URL=http://localhost:7878/
       - RADARR_API_KEY=<your api key here>
+    volumes:
+      - ./data:/data
 ```
 
 <details>
 <summary>Advanced Configuration</summary>
 Most can be left as default
 
-| Variable                    | Default                                                              | Purpose                                                                                         |
-| --------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `SONARR_API_KEY`            | (optional\*)                                                         | Sonarr API key used to resolve series titles. Required if using Sonarr.                         |
-| `SONARR_BASE_URL`           | `http://localhost:8989/`                                             | Base URL for your Sonarr instance.                                                              |
-| `RADARR_API_KEY`            | (optional\*)                                                         | Radarr API key used to resolve movie titles. Required if using Radarr.                          |
-| `RADARR_BASE_URL`           | `http://localhost:7878/`                                             | Base URL for your Radarr instance.                                                              |
-| `SEADEXERR_HOST`            | `0.0.0.0`                                                            | Interface the HTTP server listens on.                                                           |
-| `SEADEXERR_PORT`            | `6767`                                                               | TCP port Seadexerr binds to. Must be a valid `u16`.                                             |
-| `SEADEXERR_PUBLIC_BASE_URL` | (optional; falls back to `http://{SEADEXERR_HOST}:{SEADEXERR_PORT}`) | Base URL advertised in the Torznab feed. Set when running behind a reverse proxy.               |
-| `SEADEXERR_SKIP_DEBAND`     | `false`                                                              | Skip releases with the `Deband Required` tag.                                                   |
-| `SEADEXERR_PREFER`          | `best`                                                               | Release to prefer when multiple options are available: `best`, `dual_audio`, or `smallest`.     |
-| `AB_PASSKEY`                | (optional)                                                           | AnimeBytes passkey. Enables AnimeBytes releases. See [AnimeBytes Support](#animebytes-support). |
+| Variable                    | Default                                                              | Purpose                                                                                                      |
+| --------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `SONARR_API_KEY`            | (optional\*)                                                         | Sonarr API key used to resolve series titles. Required if using Sonarr.                                      |
+| `SONARR_BASE_URL`           | `http://localhost:8989/`                                             | Base URL for your Sonarr instance.                                                                           |
+| `RADARR_API_KEY`            | (optional\*)                                                         | Radarr API key used to resolve movie titles. Required if using Radarr.                                       |
+| `RADARR_BASE_URL`           | `http://localhost:7878/`                                             | Base URL for your Radarr instance.                                                                           |
+| `SEADEXERR_HOST`            | `0.0.0.0`                                                            | Interface the HTTP server listens on.                                                                        |
+| `SEADEXERR_PORT`            | `6767`                                                               | TCP port Seadexerr binds to. Must be a valid `u16`.                                                          |
+| `SEADEXERR_PUBLIC_BASE_URL` | (optional; falls back to `http://{SEADEXERR_HOST}:{SEADEXERR_PORT}`) | Base URL advertised in the Torznab feed. Set when running behind a reverse proxy.                            |
+| `SEADEXERR_SKIP_DEBAND`     | `false`                                                              | **Deprecated** - use `exclude_tags` in `scoring.toml`. Skip releases with the `Deband Required` tag.         |
+| `SEADEXERR_PREFER`          | `best`                                                               | **Deprecated** - use `scoring.toml`. Prefer `best`, `dual_audio`, or `smallest` when multiple options exist. |
+| `AB_PASSKEY`                | (optional)                                                           | AnimeBytes passkey. See [AnimeBytes Support](#animebytes-support).                                           |
 
 \* At least one of `SONARR_API_KEY` or `RADARR_API_KEY` must be provided. If only one is provided, the other service is disabled.
 
 </details>
-
-## AnimeBytes Support
-
-Seadexerr can also serve AnimeBytes releases listed on Seadex. Set
-`AB_PASSKEY` to your AnimeBytes passkey to enable it.
-
-> [!NOTE]
-> I rely on issue reports to find and fix AnimeBytes-specific breakage.
 
 ## Prowlarr & Sonarr Integration
 
@@ -67,6 +61,23 @@ In Sonarr or Radarr:
 5. Click **Test** and **Save**
 6. Go to **Settings → Profiles**
 7. Click on your profile and give a high score to Seadex (Ex: 5000)
+
+## Release Scoring
+
+When several releases exist for the same entry, Seadexerr picks the one you'd
+prefer. By default it favors the Best release. To change what wins, make a
+`scoring.toml` in your data directory.
+
+See [`example_scoring.toml`](example_scoring.toml) for a fully commented file.
+Every option has a default, so keep only what you care about.
+
+## AnimeBytes Support
+
+Seadexerr can also serve AnimeBytes releases listed on Seadex. Set
+`AB_PASSKEY` to your AnimeBytes passkey to enable it.
+
+> [!NOTE]
+> I rely on issue reports to find and fix AnimeBytes-specific breakage.
 
 This project uses [AniBridge Mappings](https://github.com/anibridge/anibridge-mappings).
 

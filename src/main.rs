@@ -4,6 +4,7 @@ mod http;
 mod mapping;
 mod radarr;
 mod releases;
+mod scoring;
 mod service;
 mod sonarr;
 mod torznab;
@@ -43,27 +44,25 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("failed to initialise PlexAniBridge mappings store")?;
 
-    let sonarr = if let Some(sonarr_config) = &config.sonarr {
-        Some(
+    let sonarr = config
+        .sonarr
+        .as_ref()
+        .map(|sonarr_config| {
             SonarrClient::new(
                 http_client.clone(),
                 sonarr_config.clone(),
                 data_path.clone(),
             )
-            .context("failed to construct Sonarr client")?,
-        )
-    } else {
-        None
-    };
+        })
+        .transpose()
+        .context("failed to construct Sonarr client")?;
 
-    let radarr = if let Some(radarr_config) = &config.radarr {
-        Some(
-            RadarrClient::new(http_client, radarr_config.clone(), data_path)
-                .context("failed to construct Radarr client")?,
-        )
-    } else {
-        None
-    };
+    let radarr = config
+        .radarr
+        .as_ref()
+        .map(|radarr_config| RadarrClient::new(http_client, radarr_config.clone(), data_path))
+        .transpose()
+        .context("failed to construct Radarr client")?;
 
     let state = Arc::new(SearchService::new(
         anilist, sonarr, radarr, releases, mappings, config,

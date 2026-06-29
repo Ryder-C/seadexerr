@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::anilist::{AniListClient, AniListError, MediaFormat};
-use crate::config::{AnimePreference, AppConfig};
+use crate::config::AppConfig;
 use crate::mapping::{PlexAniBridgeMappings, TvdbMapping, parse_season_key};
 use crate::radarr::{RadarrClient, RadarrError};
 use crate::releases::{ReleasesClient, ReleasesError, Torrent, Tracker};
@@ -594,7 +594,7 @@ impl SearchService {
     ) -> Vec<TorznabItem> {
         torrents
             .into_iter()
-            .filter(|release| !self.skip_due_to_deband(release))
+            .filter(|release| !self.is_excluded(release))
             .map(|release| {
                 let seeders = priority_seeders(release.tracker, release.is_best);
                 self.build_torznab_item(release, title.clone(), categories.clone(), seeders)
@@ -610,10 +610,10 @@ impl SearchService {
     ) -> Vec<TorznabItem> {
         let filtered: Vec<Torrent> = torrents
             .into_iter()
-            .filter(|release| !self.skip_due_to_deband(release))
+            .filter(|release| !self.is_excluded(release))
             .collect();
 
-        let priorities = self.compute_priorities(&filtered);
+        let priorities = self.config.scoring.priorities(&filtered);
 
         filtered
             .into_iter()
@@ -625,30 +625,12 @@ impl SearchService {
             .collect()
     }
 
-    fn skip_due_to_deband(&self, release: &Torrent) -> bool {
-        if self.config.skip_deband && release.is_deband() {
-            trace!(torrent_id = %release.id, "skipping torrent due to Deband tag");
-            true
-        } else {
-            false
+    fn is_excluded(&self, release: &Torrent) -> bool {
+        let excluded = self.config.scoring.is_excluded(&release.tags);
+        if excluded {
+            trace!(torrent_id = %release.id, "excluding torrent due to excluded tag");
         }
-    }
-
-    fn compute_priorities(&self, releases: &[Torrent]) -> Vec<bool> {
-        match self.config.preference {
-            AnimePreference::Best => releases.iter().map(|r| r.is_best).collect(),
-            AnimePreference::DualAudio => releases.iter().map(|r| r.dual_audio).collect(),
-            AnimePreference::Smallest => {
-                let smallest_idx = releases
-                    .iter()
-                    .enumerate()
-                    .min_by_key(|(_, r)| r.size_bytes)
-                    .map(|(i, _)| i);
-                (0..releases.len())
-                    .map(|i| Some(i) == smallest_idx)
-                    .collect()
-            }
-        }
+        excluded
     }
 
     fn build_torznab_item(

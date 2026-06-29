@@ -166,11 +166,9 @@ impl SonarrClient {
             path: self.cache_path.clone(),
         })?;
 
-        if let Err(_err) = result {
-            // For simplicity, map any persistence error to CacheWrite. We avoid trying to
-            // downcast boxed errors back to concrete types here.
+        if let Err(err) = result {
             return Err(SonarrError::CacheWrite {
-                source: std::io::Error::other("failed to persist cache"),
+                source: std::io::Error::other(err.to_string()),
                 path: self.cache_path.clone(),
             });
         }

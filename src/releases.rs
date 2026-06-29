@@ -9,7 +9,6 @@ use tracing::trace;
 
 const RELEASES_BASE_URL: &str = "https://releases.moe/api/";
 const PAGE_SIZE: usize = 100;
-const DEBAND_TAG: &str = "Deband Required";
 
 #[derive(Debug, Clone)]
 pub struct ReleasesClient {
@@ -132,16 +131,12 @@ impl ReleasesClient {
         }
 
         let unique: HashSet<String> = torrent_ids.iter().cloned().collect();
-        if unique.is_empty() {
-            return Ok(result);
-        }
-
         let mut unique_ids: Vec<String> = unique.into_iter().collect();
         unique_ids.sort_unstable();
 
         const CHUNK_SIZE: usize = 20;
 
-        for chunk in unique_ids.chunks(CHUNK_SIZE.max(1)) {
+        for chunk in unique_ids.chunks(CHUNK_SIZE) {
             let filter = chunk
                 .iter()
                 .map(|id| format!("(trs~'{}')", id))
@@ -224,10 +219,6 @@ pub struct Torrent {
 }
 
 impl Torrent {
-    pub fn is_deband(&self) -> bool {
-        self.tags.iter().any(|tag| tag == DEBAND_TAG)
-    }
-
     fn from_record(
         record: TorrentRecord,
         anilist_id: Option<i64>,

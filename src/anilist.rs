@@ -14,7 +14,6 @@ query MediaById($idIn: [Int], $perPage: Int) {
   Page(perPage: $perPage) {
     media(id_in: $idIn) {
       id
-      type
       format
     }
   }
@@ -47,7 +46,7 @@ impl AniListClient {
         unique.sort_unstable();
         unique.dedup();
 
-        for chunk in unique.chunks(MAX_IDS_PER_REQUEST.max(1)) {
+        for chunk in unique.chunks(MAX_IDS_PER_REQUEST) {
             let request = GraphqlRequest {
                 query: MEDIA_QUERY,
                 variables: GraphqlVariables {
@@ -157,8 +156,6 @@ struct GraphqlPage {
 #[derive(Debug, Deserialize)]
 struct GraphqlMedia {
     id: i64,
-    #[serde(rename = "type")]
-    _media_type: Option<String>,
     format: Option<String>,
 }
 

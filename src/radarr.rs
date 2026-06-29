@@ -178,9 +178,9 @@ impl RadarrClient {
             path: self.cache_path.clone(),
         })?;
 
-        if let Err(_err) = result {
+        if let Err(err) = result {
             return Err(RadarrError::CacheWrite {
-                source: std::io::Error::other("failed to persist cache"),
+                source: std::io::Error::other(err.to_string()),
                 path: self.cache_path.clone(),
             });
         }
