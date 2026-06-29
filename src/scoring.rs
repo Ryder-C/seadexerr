@@ -2,18 +2,24 @@ use std::{collections::HashMap, path::Path};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::releases::Torrent;
 
 pub const SCORING_FILE: &str = "scoring.toml";
 
+/// Default weight for releases marked Best, applied when `best` is unset.
+/// Large enough to dominate, so an empty/absent table just prioritizes Best.
+fn default_best() -> i32 {
+    100
+}
+
 /// The scoring table that decides which release(s) get the seeder boost
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScoringConfig {
     /// Weight for releases marked Best on releases.moe
-    #[serde(default)]
+    #[serde(default = "default_best")]
     pub best: i32,
     /// Weight for releases marked Dual Audio on releases.moe
     #[serde(default)]
@@ -27,6 +33,18 @@ pub struct ScoringConfig {
     /// Per-tag weights, keyed by the exact releases.moe tag label
     #[serde(default)]
     pub tags: HashMap<String, i32>,
+}
+
+impl Default for ScoringConfig {
+    fn default() -> Self {
+        Self {
+            best: default_best(),
+            dual_audio: 0,
+            size_weight: 0,
+            exclude_tags: Vec::new(),
+            tags: HashMap::new(),
+        }
+    }
 }
 
 impl ScoringConfig {
@@ -48,8 +66,11 @@ impl ScoringConfig {
         let path = data_path.join(SCORING_FILE);
 
         match std::fs::read_to_string(&path) {
-            Ok(contents) => toml::from_str(&contents)
-                .with_context(|| format!("failed to parse {}", path.display())),
+            Ok(contents) => {
+                info!("loaded scoring config from {}", path.display());
+                toml::from_str(&contents)
+                    .with_context(|| format!("failed to parse {}", path.display()))
+            }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self::from_legacy(
                 prefer.unwrap_or_default(),
                 skip_deband.unwrap_or(false),
@@ -61,7 +82,7 @@ impl ScoringConfig {
     /// Build an equivalent scoring profile from the deprecated env settings.
     fn from_legacy(prefer: LegacyPreference, skip_deband: bool) -> Self {
         let (best, dual_audio, size_weight) = match prefer {
-            LegacyPreference::Best => (1, 0, 0),
+            LegacyPreference::Best => (default_best(), 0, 0),
             LegacyPreference::DualAudio => (0, 1, 0),
             LegacyPreference::Smallest => (0, 0, 1),
         };
@@ -256,7 +277,18 @@ mod tests {
     fn load_without_file_or_env_prefers_best() {
         let dir = tempfile::tempdir().unwrap();
         let scoring = ScoringConfig::load(dir.path(), None, None).unwrap();
-        assert_eq!(scoring.best, 1);
+        assert_eq!(scoring.best, default_best());
+        assert_eq!(scoring.dual_audio, 0);
+        assert_eq!(scoring.size_weight, 0);
+        assert!(scoring.exclude_tags.is_empty());
+    }
+
+    #[test]
+    fn load_empty_file_matches_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(SCORING_FILE), "\n  \n").unwrap();
+        let scoring = ScoringConfig::load(dir.path(), None, None).unwrap();
+        assert_eq!(scoring.best, default_best());
         assert_eq!(scoring.dual_audio, 0);
         assert_eq!(scoring.size_weight, 0);
         assert!(scoring.exclude_tags.is_empty());
@@ -273,7 +305,7 @@ mod tests {
     #[test]
     fn legacy_best_maps_to_best_weight() {
         let scoring = ScoringConfig::from_legacy(LegacyPreference::Best, false);
-        assert_eq!(scoring.best, 1);
+        assert_eq!(scoring.best, default_best());
         assert_eq!(scoring.dual_audio, 0);
         assert_eq!(scoring.size_weight, 0);
         assert!(scoring.exclude_tags.is_empty());
