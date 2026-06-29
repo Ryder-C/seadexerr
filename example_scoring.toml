@@ -1,0 +1,34 @@
+# Example scoring.toml
+#
+# Place this file in your data directory as `scoring.toml` to customize which
+# releases Seadexerr prefers. Every field has a default, so you only need to
+# include what you care about. Delete the rest.
+#
+# Each release's score is the sum of the weights below for everything it
+# matches. The highest scorer(s) win. Weights are integers and may be negative.
+# Unlisted tags score 0.
+
+# Category weights
+best = 100          # release marked "Best" on releases.moe
+dual_audio = 50     # release marked Dual Audio
+
+# Size axis. The release size is normalized across the candidates to [0, 1]
+# (smallest = 1.0, largest = 0.0) and multiplied by this weight.
+#   > 0  favors smaller releases
+#   < 0  favors larger releases
+#   0    ignores size entirely
+size_weight = 30
+
+# Tags removed from results entirely. Match the exact releases.moe label.
+exclude_tags = ["Deband Required"]
+
+# Per-tag weights, uses the exact releases.moe tag label.
+[tags]
+"HDR"                = 20
+"Dolby Vision"       = 20
+"YUV444P"            = 10
+"Deband Recommended" = 5
+"VFR"                = -10
+"Misplaced Special"  = -20
+"Broken"             = -30
+"Patch Required"     = -1000
