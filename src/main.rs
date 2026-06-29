@@ -31,8 +31,8 @@ async fn main() -> anyhow::Result<()> {
 
     let http_client = http::client().context("failed to construct shared HTTP client")?;
 
-    let releases =
-        ReleasesClient::new(http_client.clone()).context("failed to construct releases.moe client")?;
+    let releases = ReleasesClient::new(http_client.clone(), config.ab_passkey.as_deref())
+        .context("failed to construct releases.moe client")?;
 
     let anilist =
         AniListClient::new(http_client.clone()).context("failed to construct AniList client")?;
@@ -45,8 +45,12 @@ async fn main() -> anyhow::Result<()> {
 
     let sonarr = if let Some(sonarr_config) = &config.sonarr {
         Some(
-            SonarrClient::new(http_client.clone(), sonarr_config.clone(), data_path.clone())
-                .context("failed to construct Sonarr client")?,
+            SonarrClient::new(
+                http_client.clone(),
+                sonarr_config.clone(),
+                data_path.clone(),
+            )
+            .context("failed to construct Sonarr client")?,
         )
     } else {
         None

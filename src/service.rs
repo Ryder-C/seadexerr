@@ -4,7 +4,7 @@ use crate::anilist::{AniListClient, AniListError, MediaFormat};
 use crate::config::{AnimePreference, AppConfig};
 use crate::mapping::{PlexAniBridgeMappings, TvdbMapping, parse_season_key};
 use crate::radarr::{RadarrClient, RadarrError};
-use crate::releases::{ReleasesClient, ReleasesError, Torrent};
+use crate::releases::{ReleasesClient, ReleasesError, Torrent, Tracker};
 use crate::sonarr::{SonarrClient, SonarrError};
 use crate::torznab::{self, ANIME_CATEGORY, MOVIE_CATEGORY, TorznabItem};
 use thiserror::Error;
@@ -12,6 +12,17 @@ use tracing::{debug, info, trace, warn};
 
 /// Upper bound on items returned in a single torznab response.
 const MAX_RESPONSE_ITEMS: usize = 100;
+
+/// Seeder value to use for a torrent based on its tracker and preference.
+/// A value needs to be 10x greater than the next lower value for Sonarr/Radarr to prioritize it.
+fn priority_seeders(tracker: Tracker, preferred: bool) -> u32 {
+    match (tracker, preferred) {
+        (Tracker::AnimeBytes, true) => 10000,
+        (Tracker::Nyaa, true) => 1000,
+        (Tracker::AnimeBytes, false) => 100,
+        (Tracker::Nyaa, false) => 10,
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum ServiceError {
@@ -584,7 +595,10 @@ impl SearchService {
         torrents
             .into_iter()
             .filter(|release| !self.skip_due_to_deband(release))
-            .map(|release| self.build_torznab_item(release, title.clone(), categories.clone(), 100))
+            .map(|release| {
+                let seeders = priority_seeders(release.tracker, release.is_best);
+                self.build_torznab_item(release, title.clone(), categories.clone(), seeders)
+            })
             .collect()
     }
 
@@ -605,7 +619,7 @@ impl SearchService {
             .into_iter()
             .zip(priorities)
             .map(|(release, preferred)| {
-                let seeders = if preferred { 1000 } else { 100 };
+                let seeders = priority_seeders(release.tracker, preferred);
                 self.build_torznab_item(release, title.clone(), categories.clone(), seeders)
             })
             .collect()
