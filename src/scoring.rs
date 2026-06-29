@@ -24,7 +24,7 @@ pub struct ScoringConfig {
     /// Weight for releases marked Dual Audio on releases.moe
     #[serde(default)]
     pub dual_audio: i32,
-    /// Applied to the size factor: `>0` favors smaller, `<0` larger, `0` ignores
+    /// Applied to the size factor: `<0` favors smaller, `>0` larger, `0` ignores
     #[serde(default)]
     pub size_weight: i32,
     /// Tags that remove a release from results entirely (exact releases.moe label)
@@ -84,7 +84,7 @@ impl ScoringConfig {
         let (best, dual_audio, size_weight) = match prefer {
             LegacyPreference::Best => (default_best(), 0, 0),
             LegacyPreference::DualAudio => (0, 1, 0),
-            LegacyPreference::Smallest => (0, 0, 1),
+            LegacyPreference::Smallest => (0, 0, -1),
         };
 
         let exclude_tags = if skip_deband {
@@ -141,7 +141,7 @@ impl ScoringConfig {
                 } else {
                     // Scaled by `span`, so this is a large comparison key, not a real score.
                     base * span
-                        + i64::from(self.size_weight) * (max_size - release.size_bytes) as i64
+                        + i64::from(self.size_weight) * (release.size_bytes - min_size) as i64
                 }
             })
             .collect();
@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn size_weight_favors_smaller() {
         let scoring = ScoringConfig {
-            size_weight: 30,
+            size_weight: -30,
             ..Default::default()
         };
         let big = torrent("big", 1000);
@@ -314,7 +314,7 @@ mod tests {
     #[test]
     fn legacy_smallest_maps_to_size_weight() {
         let scoring = ScoringConfig::from_legacy(LegacyPreference::Smallest, false);
-        assert_eq!(scoring.size_weight, 1);
+        assert_eq!(scoring.size_weight, -1);
     }
 
     #[test]

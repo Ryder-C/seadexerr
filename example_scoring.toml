@@ -13,11 +13,13 @@ best = 100          # release marked "Best" on releases.moe
 dual_audio = 50     # release marked Dual Audio
 
 # Size axis. The release size is normalized across the candidates to [0, 1]
-# (smallest = 1.0, largest = 0.0) and multiplied by this weight.
-#   > 0  favors smaller releases
-#   < 0  favors larger releases
+# (smallest = 0.0, largest = 1.0) and multiplied by this weight.
+# size_weight = 30 -> the largest releases score is increased by 30 (favoring larger)
+# size_weight = -30 -> the largest releases score is decreased by 30 (favoring smaller)
+#   < 0  favors smaller releases
+#   > 0  favors larger releases
 #   0    ignores size entirely
-size_weight = 30
+size_weight = -30
 
 # Tags removed from results entirely. Match the exact releases.moe label.
 exclude_tags = ["Deband Required"]

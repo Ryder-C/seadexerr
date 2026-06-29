@@ -48,7 +48,11 @@ async fn main() -> anyhow::Result<()> {
         .sonarr
         .as_ref()
         .map(|sonarr_config| {
-            SonarrClient::new(http_client.clone(), sonarr_config.clone(), data_path.clone())
+            SonarrClient::new(
+                http_client.clone(),
+                sonarr_config.clone(),
+                data_path.clone(),
+            )
         })
         .transpose()
         .context("failed to construct Sonarr client")?;
