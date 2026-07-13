@@ -32,10 +32,7 @@ impl ReleasesClient {
     pub async fn search_torrents(&self, anilist_id: i64) -> Result<Vec<Torrent>, ReleasesError> {
         let payload = self
             .fetch_entries_with(|params| {
-                params.push((
-                    "filter".to_string(),
-                    format!("(alID={anilist_id})&&incomplete=false"),
-                ));
+                params.push(("filter".to_string(), format!("alID={anilist_id}")));
             })
             .await?;
 
@@ -54,7 +51,6 @@ impl ReleasesClient {
         let payload = self
             .fetch_entries_with(|params| {
                 params.push(("sort".to_string(), "-updated".to_string()));
-                params.push(("filter".to_string(), "(incomplete=false)".to_string()));
             })
             .await?;
 
