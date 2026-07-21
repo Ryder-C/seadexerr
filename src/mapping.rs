@@ -32,13 +32,13 @@ struct CachedMappings {
 #[derive(Debug, Clone)]
 struct MappingEntry {
     anilist_id: i64,
-    seasons: Vec<String>,
+    season: u32,
 }
 
 #[derive(Debug, Clone)]
 struct ReverseMappingEntry {
     tvdb_id: i64,
-    seasons: Vec<String>,
+    season: u32,
 }
 
 #[derive(Debug)]
@@ -52,7 +52,7 @@ struct MappingIndex {
 #[derive(Debug, Clone)]
 pub struct TvdbMapping {
     pub tvdb_id: i64,
-    pub seasons: Vec<String>,
+    pub season: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -398,7 +398,6 @@ impl PlexAniBridgeMappings {
 
     pub async fn resolve_anilist_id(&self, tvdb_id: i64, season: u32) -> Result<Option<i64>> {
         let mappings = self.index().await?;
-        let season_key = format!("s{season}");
 
         if let Some(entries) = mappings.tvdb_to_entries.get(&tvdb_id) {
             trace!(
@@ -409,7 +408,7 @@ impl PlexAniBridgeMappings {
             );
 
             for entry in entries {
-                if entry.seasons.iter().any(|key| key == &season_key) {
+                if entry.season == season {
                     trace!(
                         tvdb_id,
                         season,
@@ -458,7 +457,7 @@ impl PlexAniBridgeMappings {
                     .iter()
                     .map(|entry| TvdbMapping {
                         tvdb_id: entry.tvdb_id,
-                        seasons: entry.seasons.clone(),
+                        season: entry.season,
                     })
                     .collect()
             })
@@ -488,21 +487,17 @@ impl IndexBuilder {
             let Ok(tvdb_id) = id_str.parse::<i64>() else {
                 return;
             };
-            let season = scope.unwrap_or("s1").to_owned();
+            let Some(season) = parse_season_key(scope.unwrap_or("s1")) else {
+                return;
+            };
             self.tvdb_to_entries
                 .entry(tvdb_id)
                 .or_default()
-                .push(MappingEntry {
-                    anilist_id,
-                    seasons: vec![season.clone()],
-                });
+                .push(MappingEntry { anilist_id, season });
             self.anilist_to_entries
                 .entry(anilist_id)
                 .or_default()
-                .push(ReverseMappingEntry {
-                    tvdb_id,
-                    seasons: vec![season],
-                });
+                .push(ReverseMappingEntry { tvdb_id, season });
         } else if provider == "tmdb_movie" {
             let Ok(tmdb_id) = id_str.parse::<i64>() else {
                 return;
@@ -643,7 +638,7 @@ fn parse_descriptor(key: &str) -> Option<(&str, &str, Option<&str>)> {
     Some((provider, id, scope))
 }
 
-pub(crate) fn parse_season_key(key: &str) -> Option<u32> {
+fn parse_season_key(key: &str) -> Option<u32> {
     if !key.starts_with('s') {
         return None;
     }
@@ -688,7 +683,7 @@ mod tests {
         assert_eq!(index.tvdb_to_entries.len(), 2);
         let entries = &index.tvdb_to_entries[&72025];
         assert_eq!(entries[0].anilist_id, 290);
-        assert_eq!(entries[0].seasons, vec!["s1".to_string()]);
+        assert_eq!(entries[0].season, 1);
         assert_eq!(index.anilist_to_entries[&290][0].tvdb_id, 72025);
 
         // tmdb_movie targets populate the movie maps both directions.

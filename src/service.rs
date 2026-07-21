@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::anilist::{AniListClient, AniListError, MediaFormat};
 use crate::config::AppConfig;
-use crate::mapping::{PlexAniBridgeMappings, TvdbMapping, parse_season_key};
+use crate::mapping::{PlexAniBridgeMappings, TvdbMapping};
 use crate::radarr::{RadarrClient, RadarrError};
 use crate::releases::{ReleasesClient, ReleasesError, Torrent, Tracker};
 use crate::sonarr::{SonarrClient, SonarrError};
@@ -704,22 +704,9 @@ impl SearchService {
         let mut best: Option<(i64, u32)> = None;
 
         for mapping in mappings {
-            let mut seasons: Vec<u32> = mapping
-                .seasons
-                .iter()
-                .filter_map(|key| parse_season_key(key))
-                .collect();
-
-            if seasons.is_empty() {
-                continue;
-            }
-
-            seasons.sort_unstable();
-            let season = seasons[0];
-
             match best {
-                Some((_, current)) if season >= current => {}
-                _ => best = Some((mapping.tvdb_id, season)),
+                Some((_, current)) if mapping.season >= current => {}
+                _ => best = Some((mapping.tvdb_id, mapping.season)),
             }
         }
 
