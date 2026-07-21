@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::anilist::{AniListClient, AniListError, MediaFormat};
 use crate::config::AppConfig;
@@ -384,8 +384,6 @@ impl SearchService {
 
         let mut tv_title_cache: HashMap<(i64, u32), String> = HashMap::new();
         let mut movie_title_cache: HashMap<i64, String> = HashMap::new();
-        let mut active_tvdb_ids: HashSet<i64> = HashSet::new();
-        let mut active_tmdb_ids: HashSet<i64> = HashSet::new();
         let mut items = Vec::with_capacity(window.len());
 
         let mut grouped_torrents: HashMap<(String, Vec<u32>), Vec<Torrent>> = HashMap::new();
@@ -402,11 +400,7 @@ impl SearchService {
             match &media.format {
                 format if self.format_allowed(format) && self.sonarr.is_some() => {
                     let title = match self
-                        .resolve_tv_generic_title(
-                            &torrent,
-                            &mut tv_title_cache,
-                            &mut active_tvdb_ids,
-                        )
+                        .resolve_tv_generic_title(&torrent, &mut tv_title_cache)
                         .await
                     {
                         Ok(Some(title)) => title,
@@ -430,11 +424,7 @@ impl SearchService {
                 }
                 MediaFormat::Movie if self.radarr.is_some() => {
                     match self
-                        .resolve_movie_generic_title(
-                            anilist_id,
-                            &mut movie_title_cache,
-                            &mut active_tmdb_ids,
-                        )
+                        .resolve_movie_generic_title(anilist_id, &mut movie_title_cache)
                         .await
                     {
                         Ok(Some(title)) => {
@@ -463,20 +453,6 @@ impl SearchService {
             items.extend(self.process_torrents(torrents, title, categories));
         }
 
-        if let Some(sonarr) = &self.sonarr {
-            sonarr
-                .retain_titles(&active_tvdb_ids)
-                .await
-                .map_err(ServiceError::Sonarr)?;
-        }
-
-        if let Some(radarr) = &self.radarr {
-            radarr
-                .retain_titles(&active_tmdb_ids)
-                .await
-                .map_err(ServiceError::Radarr)?;
-        }
-
         Ok((items, total))
     }
 
@@ -484,7 +460,6 @@ impl SearchService {
         &self,
         torrent: &Torrent,
         cache: &mut HashMap<(i64, u32), String>,
-        active_tvdb_ids: &mut HashSet<i64>,
     ) -> Result<Option<String>, ServiceError> {
         let Some(anilist_id) = torrent.anilist_id else {
             return Ok(None);
@@ -501,8 +476,6 @@ impl SearchService {
         }
 
         if let Some((tvdb_id, season)) = self.select_tvdb_and_season(&mappings) {
-            active_tvdb_ids.insert(tvdb_id);
-
             if let Some(existing) = cache.get(&(tvdb_id, season)) {
                 return Ok(Some(existing.clone()));
             }
@@ -519,7 +492,6 @@ impl SearchService {
         &self,
         anilist_id: i64,
         cache: &mut HashMap<i64, String>,
-        active_tmdb_ids: &mut HashSet<i64>,
     ) -> Result<Option<String>, ServiceError> {
         let Some(tmdb_id) = self
             .mappings
@@ -531,7 +503,6 @@ impl SearchService {
         };
 
         if let Some(existing) = cache.get(&tmdb_id) {
-            active_tmdb_ids.insert(tmdb_id);
             return Ok(Some(existing.clone()));
         }
 
@@ -548,7 +519,6 @@ impl SearchService {
 
         let formatted = self.format_movie_feed_title(&movie.title, movie.year);
         cache.insert(tmdb_id, formatted.clone());
-        active_tmdb_ids.insert(tmdb_id);
         Ok(Some(formatted))
     }
 
