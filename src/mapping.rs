@@ -276,6 +276,18 @@ impl PlexAniBridgeMappings {
         Ok(())
     }
 
+    /// Returns the current mapping index. Falls back to loading from
+    /// disk only if the cache was never hydrated.
+    async fn index(&self) -> Result<Arc<MappingIndex>> {
+        {
+            let guard = self.cache.read().await;
+            if let Some(cache) = guard.as_ref() {
+                return Ok(cache.entries.clone());
+            }
+        }
+        self.load_mappings().await
+    }
+
     async fn load_mappings(&self) -> Result<Arc<MappingIndex>> {
         let metadata = match fs::metadata(&self.path).await {
             Ok(metadata) => metadata,
@@ -438,7 +450,7 @@ impl PlexAniBridgeMappings {
     }
 
     pub async fn resolve_anilist_id(&self, tvdb_id: i64, season: u32) -> Result<Option<i64>> {
-        let mappings = self.load_mappings().await?;
+        let mappings = self.index().await?;
         let season_key = format!("s{season}");
 
         if let Some(entries) = mappings.tvdb_to_entries.get(&tvdb_id) {
@@ -473,7 +485,7 @@ impl PlexAniBridgeMappings {
     }
 
     pub async fn resolve_anilist_id_for_tmdb(&self, tmdb_id: i64) -> Result<Option<i64>> {
-        let mappings = self.load_mappings().await?;
+        let mappings = self.index().await?;
         if let Some(anilist_id) = mappings.tmdb_to_anilist.get(&tmdb_id) {
             trace!(tmdb_id, anilist_id, "resolved tmdb mapping");
             Ok(Some(*anilist_id))
@@ -484,12 +496,12 @@ impl PlexAniBridgeMappings {
     }
 
     pub async fn resolve_tmdb_id(&self, anilist_id: i64) -> Result<Option<i64>> {
-        let mappings = self.load_mappings().await?;
+        let mappings = self.index().await?;
         Ok(mappings.anilist_to_tmdb.get(&anilist_id).copied())
     }
 
     pub async fn resolve_tvdb_mappings(&self, anilist_id: i64) -> Result<Vec<TvdbMapping>> {
-        let mappings = self.load_mappings().await?;
+        let mappings = self.index().await?;
 
         let result = mappings
             .anilist_to_entries
