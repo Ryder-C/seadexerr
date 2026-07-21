@@ -325,5 +325,4 @@ mod tests {
         assert_eq!(entry.title, "Spirited Away");
         assert_eq!(entry.year, 2001);
     }
-
 }

@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use crate::anilist::{AniListClient, AniListError, MediaFormat};
 use crate::config::AppConfig;
@@ -8,10 +9,34 @@ use crate::releases::{ReleasesClient, ReleasesError, Torrent, Tracker};
 use crate::sonarr::{SonarrClient, SonarrError};
 use crate::torznab::{self, ANIME_CATEGORY, MOVIE_CATEGORY, TorznabItem};
 use thiserror::Error;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use tracing::{debug, info, trace, warn};
 
 /// Upper bound on items returned in a single torznab response.
 const MAX_RESPONSE_ITEMS: usize = 100;
+
+/// Cap on simultaneous Sonarr/Radarr title lookups during a generic search.
+const MAX_CONCURRENT_TITLE_LOOKUPS: usize = 8;
+
+/// The upstream lookup a torrent's feed title comes from during a generic search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum TitleKey {
+    Tv { tvdb_id: i64, season: u32 },
+    Movie { tmdb_id: i64 },
+}
+
+fn format_tv_feed_title(series_title: &str, season: u32) -> String {
+    format!("{series_title} S{season:02} Bluray 1080p remux")
+}
+
+fn format_movie_feed_title(title: &str, year: u32) -> String {
+    if year == 0 {
+        format!("{title} Bluray 1080p remux")
+    } else {
+        format!("{title} ({year}) Bluray 1080p remux")
+    }
+}
 
 /// Seeder value to use for a torrent based on its tracker and preference.
 /// A value needs to be 10x greater than the next lower value for Sonarr/Radarr to prioritize it.
@@ -253,7 +278,7 @@ impl SearchService {
         let total = torrents.len();
 
         let feed_title = match self.radarr.as_ref().unwrap().resolve_name(tmdb_id).await {
-            Ok(movie) => self.format_movie_feed_title(&movie.title, movie.year),
+            Ok(movie) => format_movie_feed_title(&movie.title, movie.year),
             Err(RadarrError::NotFound { .. } | RadarrError::Api { .. }) => {
                 debug!(
                     tmdb_id,
@@ -382,11 +407,8 @@ impl SearchService {
             return Ok((Vec::new(), total));
         }
 
-        let mut tv_title_cache: HashMap<(i64, u32), String> = HashMap::new();
-        let mut movie_title_cache: HashMap<i64, String> = HashMap::new();
-        let mut items = Vec::with_capacity(window.len());
-
-        let mut grouped_torrents: HashMap<(String, Vec<u32>), Vec<Torrent>> = HashMap::new();
+        // Resolve each torrent to its title lookup key via the in-memory mapping index.
+        let mut targets: Vec<(Torrent, TitleKey)> = Vec::with_capacity(window.len());
 
         for torrent in window.into_iter() {
             let Some(anilist_id) = torrent.anilist_id else {
@@ -399,16 +421,10 @@ impl SearchService {
 
             match &media.format {
                 format if self.format_allowed(format) && self.sonarr.is_some() => {
-                    let title = match self
-                        .resolve_tv_generic_title(&torrent, &mut tv_title_cache)
-                        .await
-                    {
-                        Ok(Some(title)) => title,
-                        Ok(None) => {
-                            debug!(torrent_id = %torrent.id, "no tv title resolved for generic search; skipping");
-                            continue;
-                        }
+                    let mappings = match self.mappings.resolve_tvdb_mappings(anilist_id).await {
+                        Ok(mappings) => mappings,
                         Err(error) => {
+                            let error = ServiceError::Mapping(error);
                             warn!(
                                 torrent_id = %torrent.id,
                                 %error,
@@ -417,26 +433,22 @@ impl SearchService {
                             continue;
                         }
                     };
-                    grouped_torrents
-                        .entry((title, self.tv_category_ids()))
-                        .or_default()
-                        .push(torrent);
+                    let Some((tvdb_id, season)) = self.select_tvdb_and_season(&mappings) else {
+                        debug!(torrent_id = %torrent.id, "no tv title resolved for generic search; skipping");
+                        continue;
+                    };
+                    targets.push((torrent, TitleKey::Tv { tvdb_id, season }));
                 }
                 MediaFormat::Movie if self.radarr.is_some() => {
-                    match self
-                        .resolve_movie_generic_title(anilist_id, &mut movie_title_cache)
-                        .await
-                    {
-                        Ok(Some(title)) => {
-                            grouped_torrents
-                                .entry((title, self.movie_category_ids()))
-                                .or_default()
-                                .push(torrent);
+                    match self.mappings.resolve_tmdb_id(anilist_id).await {
+                        Ok(Some(tmdb_id)) => {
+                            targets.push((torrent, TitleKey::Movie { tmdb_id }));
                         }
                         Ok(None) => {
                             debug!(torrent_id = %torrent.id, "no movie title resolved for generic search; skipping");
                         }
                         Err(error) => {
+                            let error = ServiceError::Mapping(error);
                             warn!(
                                 torrent_id = %torrent.id,
                                 %error,
@@ -449,6 +461,27 @@ impl SearchService {
             }
         }
 
+        // Resolve each unique key against Sonarr/Radarr concurrently.
+        let titles = self.resolve_titles_concurrently(&targets).await;
+
+        // Group torrents under their resolved feed titles.
+        let mut items = Vec::with_capacity(targets.len());
+        let mut grouped_torrents: HashMap<(String, Vec<u32>), Vec<Torrent>> = HashMap::new();
+
+        for (torrent, key) in targets {
+            let Some(title) = titles.get(&key) else {
+                continue;
+            };
+            let categories = match key {
+                TitleKey::Tv { .. } => self.tv_category_ids(),
+                TitleKey::Movie { .. } => self.movie_category_ids(),
+            };
+            grouped_torrents
+                .entry((title.clone(), categories))
+                .or_default()
+                .push(torrent);
+        }
+
         for ((title, categories), torrents) in grouped_torrents {
             items.extend(self.process_torrents(torrents, title, categories));
         }
@@ -456,70 +489,90 @@ impl SearchService {
         Ok((items, total))
     }
 
-    pub async fn resolve_tv_generic_title(
+    /// Resolves the unique title keys in `targets` against Sonarr/Radarr, a
+    /// bounded number at a time. Failed lookups are logged and omitted.
+    async fn resolve_titles_concurrently(
         &self,
-        torrent: &Torrent,
-        cache: &mut HashMap<(i64, u32), String>,
-    ) -> Result<Option<String>, ServiceError> {
-        let Some(anilist_id) = torrent.anilist_id else {
-            return Ok(None);
-        };
+        targets: &[(Torrent, TitleKey)],
+    ) -> HashMap<TitleKey, String> {
+        let unique_keys: HashSet<TitleKey> = targets.iter().map(|(_, key)| *key).collect();
+        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_TITLE_LOOKUPS));
+        let mut lookups: JoinSet<(TitleKey, Option<String>)> = JoinSet::new();
 
-        let mappings = self
-            .mappings
-            .resolve_tvdb_mappings(anilist_id)
-            .await
-            .map_err(ServiceError::Mapping)?;
-
-        if mappings.is_empty() {
-            return Ok(None);
-        }
-
-        if let Some((tvdb_id, season)) = self.select_tvdb_and_season(&mappings) {
-            if let Some(existing) = cache.get(&(tvdb_id, season)) {
-                return Ok(Some(existing.clone()));
+        for key in unique_keys {
+            let semaphore = semaphore.clone();
+            match key {
+                TitleKey::Tv { tvdb_id, season } => {
+                    let sonarr = self
+                        .sonarr
+                        .as_ref()
+                        .expect("tv title lookups require Sonarr to be enabled")
+                        .clone();
+                    lookups.spawn(async move {
+                        let _permit = semaphore
+                            .acquire_owned()
+                            .await
+                            .expect("title lookup semaphore is never closed");
+                        let title = match sonarr.resolve_name(tvdb_id).await {
+                            Ok(series_title) => Some(format_tv_feed_title(&series_title, season)),
+                            Err(error) => {
+                                warn!(
+                                    tvdb_id,
+                                    %error,
+                                    "failed to resolve tv title for generic search; skipping"
+                                );
+                                None
+                            }
+                        };
+                        (key, title)
+                    });
+                }
+                TitleKey::Movie { tmdb_id } => {
+                    let radarr = self
+                        .radarr
+                        .as_ref()
+                        .expect("movie title lookups require Radarr to be enabled")
+                        .clone();
+                    lookups.spawn(async move {
+                        let _permit = semaphore
+                            .acquire_owned()
+                            .await
+                            .expect("title lookup semaphore is never closed");
+                        let title = match radarr.resolve_name(tmdb_id).await {
+                            Ok(movie) => Some(format_movie_feed_title(&movie.title, movie.year)),
+                            Err(RadarrError::NotFound { .. } | RadarrError::Api { .. }) => {
+                                debug!(
+                                    tmdb_id,
+                                    "no movie title resolved for generic search; skipping"
+                                );
+                                None
+                            }
+                            Err(error) => {
+                                warn!(
+                                    tmdb_id,
+                                    %error,
+                                    "failed to resolve movie title for generic search; skipping"
+                                );
+                                None
+                            }
+                        };
+                        (key, title)
+                    });
+                }
             }
-
-            let title = self.resolve_feed_title(tvdb_id, season).await?;
-            cache.insert((tvdb_id, season), title.clone());
-            return Ok(Some(title));
         }
 
-        Ok(None)
-    }
-
-    pub async fn resolve_movie_generic_title(
-        &self,
-        anilist_id: i64,
-        cache: &mut HashMap<i64, String>,
-    ) -> Result<Option<String>, ServiceError> {
-        let Some(tmdb_id) = self
-            .mappings
-            .resolve_tmdb_id(anilist_id)
-            .await
-            .map_err(ServiceError::Mapping)?
-        else {
-            return Ok(None);
-        };
-
-        if let Some(existing) = cache.get(&tmdb_id) {
-            return Ok(Some(existing.clone()));
+        let mut titles = HashMap::new();
+        while let Some(joined) = lookups.join_next().await {
+            match joined {
+                Ok((key, Some(title))) => {
+                    titles.insert(key, title);
+                }
+                Ok((_, None)) => {}
+                Err(error) => warn!(%error, "title lookup task failed"),
+            }
         }
-
-        let radarr = self
-            .radarr
-            .as_ref()
-            .expect("resolve_movie_generic_title requires Radarr to be enabled");
-
-        let movie = match radarr.resolve_name(tmdb_id).await {
-            Ok(movie) => movie,
-            Err(RadarrError::NotFound { .. } | RadarrError::Api { .. }) => return Ok(None),
-            Err(err) => return Err(ServiceError::Radarr(err)),
-        };
-
-        let formatted = self.format_movie_feed_title(&movie.title, movie.year);
-        cache.insert(tmdb_id, formatted.clone());
-        Ok(Some(formatted))
+        titles
     }
 
     pub async fn resolve_feed_title(
@@ -537,15 +590,7 @@ impl SearchService {
             .await
             .map_err(ServiceError::Sonarr)?;
         trace!(tvdb_id, %series_title, "resolved series title from sonarr");
-        Ok(format!("{series_title} S{season:02} Bluray 1080p remux"))
-    }
-
-    pub fn format_movie_feed_title(&self, title: &str, year: u32) -> String {
-        if year == 0 {
-            format!("{title} Bluray 1080p remux")
-        } else {
-            format!("{title} ({year}) Bluray 1080p remux")
-        }
+        Ok(format_tv_feed_title(&series_title, season))
     }
 
     fn format_allowed(&self, format: &MediaFormat) -> bool {

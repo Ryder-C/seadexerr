@@ -291,5 +291,4 @@ mod tests {
         let reloaded = load_cache(&dir.path().join(CACHE_FILENAME)).unwrap();
         assert_eq!(reloaded.get(&42), Some(&"Naruto".to_string()));
     }
-
 }
