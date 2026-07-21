@@ -142,7 +142,13 @@ impl SearchService {
             return Ok((Vec::new(), 0));
         }
 
-        let total = collected.len();
+        let torrents: Vec<Torrent> = collected
+            .into_iter()
+            .filter(|item| item.files.len() > 1)
+            .filter(|item| !self.is_excluded(item))
+            .collect();
+        let total = torrents.len();
+
         let feed_title = match self.resolve_feed_title(tvdb_id, season).await {
             Ok(title) => title,
             Err(ServiceError::Sonarr(SonarrError::Api { .. } | SonarrError::NotFound { .. })) => {
@@ -155,14 +161,13 @@ impl SearchService {
             Err(err) => return Err(err),
         };
 
-        let torrents: Vec<Torrent> = collected
-            .into_iter()
-            .filter(|item| item.files.len() > 1)
-            .skip(offset)
-            .take(limit)
-            .collect();
-
-        let items = self.process_torrents_ranked(torrents, feed_title, self.tv_category_ids());
+        let items = self.process_torrents_ranked(
+            torrents,
+            feed_title,
+            self.tv_category_ids(),
+            offset,
+            limit,
+        );
         Ok((items, total))
     }
 
@@ -241,7 +246,12 @@ impl SearchService {
             return Ok((Vec::new(), 0));
         }
 
-        let total = collected.len();
+        let torrents: Vec<Torrent> = collected
+            .into_iter()
+            .filter(|item| !self.is_excluded(item))
+            .collect();
+        let total = torrents.len();
+
         let feed_title = match self.radarr.as_ref().unwrap().resolve_name(tmdb_id).await {
             Ok(movie) => self.format_movie_feed_title(&movie.title, movie.year),
             Err(RadarrError::NotFound { .. } | RadarrError::Api { .. }) => {
@@ -254,8 +264,13 @@ impl SearchService {
             Err(err) => return Err(ServiceError::Radarr(err)),
         };
 
-        let torrents: Vec<Torrent> = collected.into_iter().skip(offset).take(limit).collect();
-        let items = self.process_torrents_ranked(torrents, feed_title, self.movie_category_ids());
+        let items = self.process_torrents_ranked(
+            torrents,
+            feed_title,
+            self.movie_category_ids(),
+            offset,
+            limit,
+        );
 
         Ok((items, total))
     }
@@ -355,7 +370,7 @@ impl SearchService {
                 _ => false,
             };
 
-            if include {
+            if include && !self.is_excluded(&torrent) {
                 eligible.push(torrent);
             }
         }
@@ -594,7 +609,6 @@ impl SearchService {
     ) -> Vec<TorznabItem> {
         torrents
             .into_iter()
-            .filter(|release| !self.is_excluded(release))
             .map(|release| {
                 let seeders = priority_seeders(release.tracker, release.is_best);
                 self.build_torznab_item(release, title.clone(), categories.clone(), seeders)
@@ -602,22 +616,23 @@ impl SearchService {
             .collect()
     }
 
+    /// Ranks the full torrent set, then returns the `offset`/`limit` page. Scoring
+    /// must see every candidate so the preferred pick is stable across pages.
     fn process_torrents_ranked(
         &self,
         torrents: Vec<Torrent>,
         title: String,
         categories: Vec<u32>,
+        offset: usize,
+        limit: usize,
     ) -> Vec<TorznabItem> {
-        let filtered: Vec<Torrent> = torrents
-            .into_iter()
-            .filter(|release| !self.is_excluded(release))
-            .collect();
+        let priorities = self.config.scoring.priorities(&torrents);
 
-        let priorities = self.config.scoring.priorities(&filtered);
-
-        filtered
+        torrents
             .into_iter()
             .zip(priorities)
+            .skip(offset)
+            .take(limit)
             .map(|(release, preferred)| {
                 let seeders = priority_seeders(release.tracker, preferred);
                 self.build_torznab_item(release, title.clone(), categories.clone(), seeders)
