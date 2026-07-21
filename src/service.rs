@@ -169,7 +169,7 @@ impl SearchService {
 
         let torrents: Vec<Torrent> = collected
             .into_iter()
-            .filter(|item| item.files.len() > 1)
+            .filter(|item| item.file_count > 1)
             .filter(|item| !self.is_excluded(item))
             .collect();
         let total = torrents.len();
@@ -391,7 +391,7 @@ impl SearchService {
 
             let include = match &media.format {
                 MediaFormat::Movie => true,
-                format if self.format_allowed(format) => torrent.files.len() > 1,
+                format if self.format_allowed(format) => torrent.file_count > 1,
                 _ => false,
             };
 

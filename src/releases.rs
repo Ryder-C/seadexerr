@@ -108,7 +108,7 @@ impl ReleasesClient {
                 if !tracker.is_enabled(ab_passkey) {
                     return None;
                 }
-                if record.tags.contains(&"Incomplete".to_string()) {
+                if record.tags.iter().any(|tag| tag == "Incomplete") {
                     return None;
                 }
                 let download_url = tracker.download_url(&record.url, ab_passkey)?;
@@ -205,7 +205,7 @@ pub struct Torrent {
     pub source_url: String,
     pub info_hash: Option<String>,
     pub published: Option<OffsetDateTime>,
-    pub files: Vec<TorrentFile>,
+    pub file_count: usize,
     pub size_bytes: u64,
     pub is_best: bool,
     pub dual_audio: bool,
@@ -232,7 +232,7 @@ impl Torrent {
                 .as_deref()
                 .and_then(parse_timestamp)
                 .or_else(|| record.created.as_deref().and_then(parse_timestamp)),
-            files: record.files,
+            file_count: record.files.len(),
             size_bytes,
             is_best: record.is_best,
             dual_audio: record.dual_audio,
@@ -264,8 +264,8 @@ struct TorrentRecord {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct TorrentFile {
-    pub length: u64,
+struct TorrentFile {
+    length: u64,
 }
 
 fn parse_timestamp(value: &str) -> Option<OffsetDateTime> {
