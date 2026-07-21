@@ -23,7 +23,7 @@ use crate::releases::ReleasesClient;
 use crate::service::SearchService;
 use crate::sonarr::SonarrClient;
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> anyhow::Result<()> {
     init_tracing();
 

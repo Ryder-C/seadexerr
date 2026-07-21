@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::path::PathBuf;
@@ -9,6 +10,7 @@ use reqwest::{
     Client, StatusCode,
     header::{ETAG, IF_NONE_MATCH},
 };
+use serde::de::IgnoredAny;
 use tokio::fs;
 use tokio::sync::RwLock;
 use tokio::task;
@@ -183,24 +185,17 @@ impl PlexAniBridgeMappings {
             .and_then(|value| value.to_str().ok())
             .map(|value| value.to_owned());
 
-        let bytes = response
-            .bytes()
-            .await
-            .context(format!(
-                "failed to download plexanibridge mappings from {SOURCE_URL}"
-            ))?
-            .to_vec();
+        let bytes = response.bytes().await.context(format!(
+            "failed to download plexanibridge mappings from {SOURCE_URL}"
+        ))?;
 
         // Offload heavy JSON deserialisation and index build to a blocking thread so the
-        // async runtime worker threads aren't stalled by CPU work.
+        // async runtime worker threads aren't stalled by CPU work. `Bytes` is cheap to
+        // clone (reference-counted), so the parser and the on-disk write below share a
+        // single buffer instead of holding two copies of the whole file.
         let index = {
             let bytes = bytes.clone();
-            task::spawn_blocking(move || -> Result<MappingIndex> {
-                let raw: HashMap<String, serde_json::Value> = serde_json::from_slice(&bytes)
-                    .context("failed to deserialise plexanibridge mapping file")?;
-                Ok(Self::build_index(raw))
-            })
-            .await??
+            task::spawn_blocking(move || Self::build_index(&bytes)).await??
         };
         let series = index.tvdb_to_entries.len();
         let entries = index
@@ -342,12 +337,7 @@ impl PlexAniBridgeMappings {
             self.path.display()
         ))?;
 
-        let index = task::spawn_blocking(move || -> Result<MappingIndex> {
-            let raw: HashMap<String, serde_json::Value> = serde_json::from_slice(&contents)
-                .context("failed to deserialise plexanibridge mapping file")?;
-            Ok(Self::build_index(raw))
-        })
-        .await??;
+        let index = task::spawn_blocking(move || Self::build_index(&contents)).await??;
         let series = index.tvdb_to_entries.len();
         let entries = index
             .tvdb_to_entries
@@ -381,27 +371,28 @@ impl PlexAniBridgeMappings {
         path
     }
 
-    fn build_index(raw: HashMap<String, serde_json::Value>) -> MappingIndex {
+    fn build_index(bytes: &[u8]) -> Result<MappingIndex> {
+        // Deserialise with borrowed keys and discard the season-range values via `IgnoredAny`.
+        let raw: HashMap<Cow<'_, str>, HashMap<Cow<'_, str>, IgnoredAny>> =
+            serde_json::from_slice(bytes)
+                .context("failed to deserialise plexanibridge mapping file")?;
+
         let mut tvdb_index: HashMap<i64, Vec<MappingEntry>> = HashMap::new();
         let mut anilist_index: HashMap<i64, Vec<ReverseMappingEntry>> = HashMap::new();
         let mut tmdb_index: HashMap<i64, i64> = HashMap::new();
         let mut anilist_tmdb: HashMap<i64, i64> = HashMap::new();
 
-        for (source_key, targets_value) in raw {
+        for (source_key, targets) in &raw {
             if source_key.starts_with('$') {
                 continue;
             }
 
-            let Some(("anilist", id_str, _scope)) = parse_descriptor(&source_key) else {
+            let Some(("anilist", id_str, _scope)) = parse_descriptor(source_key) else {
                 continue;
             };
 
             let Ok(anilist_id) = id_str.parse::<i64>() else {
-                debug!(source_key, "skipping mapping with non-numeric anilist id");
-                continue;
-            };
-
-            let Some(targets) = targets_value.as_object() else {
+                debug!(source_key = %source_key, "skipping mapping with non-numeric anilist id");
                 continue;
             };
 
@@ -438,12 +429,12 @@ impl PlexAniBridgeMappings {
             }
         }
 
-        MappingIndex {
+        Ok(MappingIndex {
             tvdb_to_entries: tvdb_index,
             anilist_to_entries: anilist_index,
             tmdb_to_anilist: tmdb_index,
             anilist_to_tmdb: anilist_tmdb,
-        }
+        })
     }
 
     pub async fn resolve_anilist_id(&self, tvdb_id: i64, season: u32) -> Result<Option<i64>> {
@@ -540,4 +531,45 @@ pub(crate) fn parse_season_key(key: &str) -> Option<u32> {
     }
 
     digits.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_index_extracts_tvdb_and_movie_mappings() {
+        let raw = br#"{
+            "$meta": {"schema_version": "3.0.3"},
+            "anilist:290": {
+                "tvdb_show:72025:s1": {"1-13": "1-13"},
+                "mal:290": {"1-13": "1-13"}
+            },
+            "anilist:1225": {
+                "tvdb_show:70973:s2": {"1-3": "1-3"}
+            },
+            "anilist:500": {
+                "tmdb_movie:12345": {"1": "1"}
+            },
+            "mal:999": {
+                "tvdb_show:1:s1": {"1": "1"}
+            }
+        }"#;
+
+        let index = PlexAniBridgeMappings::build_index(raw).expect("index should build");
+
+        // tvdb_show targets are indexed both directions, keyed by season scope.
+        assert_eq!(index.tvdb_to_entries.len(), 2);
+        let entries = &index.tvdb_to_entries[&72025];
+        assert_eq!(entries[0].anilist_id, 290);
+        assert_eq!(entries[0].seasons, vec!["s1".to_string()]);
+        assert_eq!(index.anilist_to_entries[&290][0].tvdb_id, 72025);
+
+        // tmdb_movie targets populate the movie maps both directions.
+        assert_eq!(index.tmdb_to_anilist[&12345], 500);
+        assert_eq!(index.anilist_to_tmdb[&500], 12345);
+
+        // `$meta` and non-anilist source keys are ignored.
+        assert!(!index.tvdb_to_entries.contains_key(&1));
+    }
 }
