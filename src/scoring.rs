@@ -117,22 +117,22 @@ impl ScoringConfig {
 
         let max_size = releases.iter().map(|r| r.size_bytes).max().unwrap_or(0);
         let min_size = releases.iter().map(|r| r.size_bytes).min().unwrap_or(0);
-        let span = (max_size - min_size) as i64;
+        let span = i128::from(max_size - min_size);
 
-        let scores: Vec<i64> = releases
+        let scores: Vec<i128> = releases
             .iter()
             .map(|release| {
-                let mut base = 0i64;
+                let mut base = 0i128;
 
                 if release.is_best {
-                    base += i64::from(self.best);
+                    base += i128::from(self.best);
                 }
                 if release.dual_audio {
-                    base += i64::from(self.dual_audio);
+                    base += i128::from(self.dual_audio);
                 }
                 for tag in &release.tags {
                     if let Some(tag_weight) = self.tags.get(tag) {
-                        base += i64::from(*tag_weight);
+                        base += i128::from(*tag_weight);
                     }
                 }
 
@@ -141,7 +141,7 @@ impl ScoringConfig {
                 } else {
                     // Scaled by `span`, so this is a large comparison key, not a real score.
                     base * span
-                        + i64::from(self.size_weight) * (release.size_bytes - min_size) as i64
+                        + i128::from(self.size_weight) * i128::from(release.size_bytes - min_size)
                 }
             })
             .collect();
