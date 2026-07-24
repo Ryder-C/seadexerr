@@ -143,8 +143,8 @@ pub fn render_caps(metadata: &ChannelMetadata) -> Result<String, TorznabBuildErr
 pub fn render_feed(
     metadata: &ChannelMetadata,
     items: &[TorznabItem],
-    _offset: usize,
-    _total: usize,
+    offset: usize,
+    total: usize,
 ) -> Result<String, TorznabBuildError> {
     let mut writer = Writer::new_with_indent(Vec::new(), b' ', 2);
     writer.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
@@ -152,12 +152,21 @@ pub fn render_feed(
     let mut rss = BytesStart::new("rss");
     rss.push_attribute(("version", "2.0"));
     rss.push_attribute(("xmlns:torznab", "http://torznab.com/schemas/2015/feed"));
+    rss.push_attribute((
+        "xmlns:newznab",
+        "http://www.newznab.com/DTD/2010/feeds/attributes/",
+    ));
     writer.write_event(Event::Start(rss))?;
 
     writer.write_event(Event::Start(BytesStart::new("channel")))?;
     write_text_element(&mut writer, "title", &metadata.title)?;
     write_text_element(&mut writer, "description", &metadata.description)?;
     write_text_element(&mut writer, "link", &metadata.site_link)?;
+
+    let mut response = BytesStart::new("newznab:response");
+    response.push_attribute(("offset", offset.to_string().as_str()));
+    response.push_attribute(("total", total.to_string().as_str()));
+    writer.write_event(Event::Empty(response))?;
 
     for item in items.iter() {
         writer.write_event(Event::Start(BytesStart::new("item")))?;
