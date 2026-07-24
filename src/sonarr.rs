@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     io::ErrorKind,
     path::{Path, PathBuf},
     sync::Arc,
@@ -99,29 +99,6 @@ impl SonarrClient {
         self.store_title(tvdb_id, &title).await?;
 
         Ok(title)
-    }
-
-    pub async fn retain_titles(&self, keep: &HashSet<i64>) -> Result<(), SonarrError> {
-        if keep.is_empty() {
-            let mut guard = self.cache.write().await;
-            if guard.is_empty() {
-                return Ok(());
-            }
-            guard.clear();
-            drop(guard);
-            return self.persist_cache().await;
-        }
-
-        let mut guard = self.cache.write().await;
-        let original_len = guard.len();
-        guard.retain(|tvdb_id, _| keep.contains(tvdb_id));
-
-        if guard.len() == original_len {
-            return Ok(());
-        }
-
-        drop(guard);
-        self.persist_cache().await
     }
 
     async fn cached_title(&self, tvdb_id: i64) -> Option<String> {
@@ -313,62 +290,5 @@ mod tests {
 
         let reloaded = load_cache(&dir.path().join(CACHE_FILENAME)).unwrap();
         assert_eq!(reloaded.get(&42), Some(&"Naruto".to_string()));
-    }
-
-    #[tokio::test]
-    async fn retain_titles_clears_when_keep_empty() {
-        let dir = TempDir::new().unwrap();
-        let client = make_client(&dir);
-
-        client.store_title(1, "A").await.unwrap();
-        client.store_title(2, "B").await.unwrap();
-
-        client.retain_titles(&HashSet::new()).await.unwrap();
-
-        assert_eq!(client.cached_title(1).await, None);
-        assert_eq!(client.cached_title(2).await, None);
-        assert!(
-            load_cache(&dir.path().join(CACHE_FILENAME))
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[tokio::test]
-    async fn retain_titles_drops_unlisted_entries() {
-        let dir = TempDir::new().unwrap();
-        let client = make_client(&dir);
-
-        client.store_title(1, "A").await.unwrap();
-        client.store_title(2, "B").await.unwrap();
-        client.store_title(3, "C").await.unwrap();
-
-        let keep: HashSet<i64> = [1, 3].into_iter().collect();
-        client.retain_titles(&keep).await.unwrap();
-
-        assert_eq!(client.cached_title(1).await, Some("A".to_string()));
-        assert_eq!(client.cached_title(2).await, None);
-        assert_eq!(client.cached_title(3).await, Some("C".to_string()));
-    }
-
-    #[tokio::test]
-    async fn retain_titles_skips_persist_when_unchanged() {
-        // Superset keep on populated cache: nothing removed, no rewrite expected.
-        let dir = TempDir::new().unwrap();
-        let client = make_client(&dir);
-        client.store_title(1, "A").await.unwrap();
-
-        let cache_path = dir.path().join(CACHE_FILENAME);
-        std::fs::remove_file(&cache_path).unwrap();
-
-        let keep: HashSet<i64> = [1, 2].into_iter().collect();
-        client.retain_titles(&keep).await.unwrap();
-        assert!(!cache_path.exists());
-
-        // Empty keep on empty cache: same short-circuit.
-        let dir = TempDir::new().unwrap();
-        let client = make_client(&dir);
-        client.retain_titles(&HashSet::new()).await.unwrap();
-        assert!(!dir.path().join(CACHE_FILENAME).exists());
     }
 }

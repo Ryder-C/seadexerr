@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     io::ErrorKind,
     path::{Path, PathBuf},
     sync::Arc,
@@ -112,29 +112,6 @@ impl RadarrClient {
         self.store_movie(tmdb_id, &movie).await?;
 
         Ok(movie)
-    }
-
-    pub async fn retain_titles(&self, keep: &HashSet<i64>) -> Result<(), RadarrError> {
-        if keep.is_empty() {
-            let mut guard = self.cache.write().await;
-            if guard.is_empty() {
-                return Ok(());
-            }
-            guard.clear();
-            drop(guard);
-            return self.persist_cache().await;
-        }
-
-        let mut guard = self.cache.write().await;
-        let original_len = guard.len();
-        guard.retain(|tmdb_id, _| keep.contains(tmdb_id));
-
-        if guard.len() == original_len {
-            return Ok(());
-        }
-
-        drop(guard);
-        self.persist_cache().await
     }
 
     async fn cached_movie(&self, tmdb_id: i64) -> Option<RadarrMovie> {
@@ -347,62 +324,5 @@ mod tests {
         let entry = reloaded.get(&42).expect("must persist");
         assert_eq!(entry.title, "Spirited Away");
         assert_eq!(entry.year, 2001);
-    }
-
-    #[tokio::test]
-    async fn retain_titles_clears_when_keep_empty() {
-        let dir = TempDir::new().unwrap();
-        let client = make_client(&dir);
-
-        client.store_movie(1, &movie("A", 2001)).await.unwrap();
-        client.store_movie(2, &movie("B", 2002)).await.unwrap();
-
-        client.retain_titles(&HashSet::new()).await.unwrap();
-
-        assert!(client.cached_movie(1).await.is_none());
-        assert!(client.cached_movie(2).await.is_none());
-        assert!(
-            load_cache(&dir.path().join(CACHE_FILENAME))
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[tokio::test]
-    async fn retain_titles_drops_unlisted_entries() {
-        let dir = TempDir::new().unwrap();
-        let client = make_client(&dir);
-
-        client.store_movie(1, &movie("A", 2001)).await.unwrap();
-        client.store_movie(2, &movie("B", 2002)).await.unwrap();
-        client.store_movie(3, &movie("C", 2003)).await.unwrap();
-
-        let keep: HashSet<i64> = [1, 3].into_iter().collect();
-        client.retain_titles(&keep).await.unwrap();
-
-        assert!(client.cached_movie(1).await.is_some());
-        assert!(client.cached_movie(2).await.is_none());
-        assert!(client.cached_movie(3).await.is_some());
-    }
-
-    #[tokio::test]
-    async fn retain_titles_skips_persist_when_unchanged() {
-        // Superset keep on populated cache: nothing removed, no rewrite expected.
-        let dir = TempDir::new().unwrap();
-        let client = make_client(&dir);
-        client.store_movie(1, &movie("A", 2001)).await.unwrap();
-
-        let cache_path = dir.path().join(CACHE_FILENAME);
-        std::fs::remove_file(&cache_path).unwrap();
-
-        let keep: HashSet<i64> = [1, 2].into_iter().collect();
-        client.retain_titles(&keep).await.unwrap();
-        assert!(!cache_path.exists());
-
-        // Empty keep on empty cache: same short-circuit.
-        let dir = TempDir::new().unwrap();
-        let client = make_client(&dir);
-        client.retain_titles(&HashSet::new()).await.unwrap();
-        assert!(!dir.path().join(CACHE_FILENAME).exists());
     }
 }
