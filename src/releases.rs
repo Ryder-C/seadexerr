@@ -265,6 +265,8 @@ struct TorrentRecord {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TorrentFile {
+    #[serde(default)]
+    pub name: String,
     pub length: u64,
 }
 
@@ -390,7 +392,10 @@ mod tests {
     }
 
     fn make_file(length: u64) -> TorrentFile {
-        TorrentFile { length }
+        TorrentFile {
+            name: String::new(),
+            length,
+        }
     }
 
     fn make_entry(al_id: Option<i64>, trs: Vec<TorrentRecord>) -> EntryRecord {

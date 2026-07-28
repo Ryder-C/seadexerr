@@ -5,7 +5,7 @@ use crate::anilist::{AniListClient, AniListError, MediaFormat};
 use crate::config::AppConfig;
 use crate::mapping::{PlexAniBridgeMappings, TvdbMapping, parse_season_key};
 use crate::radarr::{RadarrClient, RadarrError};
-use crate::releases::{ReleasesClient, ReleasesError, Torrent, Tracker};
+use crate::releases::{ReleasesClient, ReleasesError, Torrent, TorrentFile, Tracker};
 use crate::sonarr::{SonarrClient, SonarrError};
 use crate::torznab::{self, ANIME_CATEGORY, MOVIE_CATEGORY, TorznabItem};
 use thiserror::Error;
@@ -26,15 +26,54 @@ enum TitleKey {
     Movie { tmdb_id: i64 },
 }
 
-fn format_tv_feed_title(series_title: &str, season: u32) -> String {
-    format!("{series_title} S{season:02} Bluray 1080p remux")
+fn format_tv_feed_prefix(series_title: &str, season: u32) -> String {
+    format!("{series_title} S{season:02}")
 }
 
-fn format_movie_feed_title(title: &str, year: u32) -> String {
+fn format_movie_feed_prefix(title: &str, year: u32) -> String {
     if year == 0 {
-        format!("{title} Bluray 1080p remux")
+        title.to_string()
     } else {
-        format!("{title} ({year}) Bluray 1080p remux")
+        format!("{title} ({year})")
+    }
+}
+
+/// Builds the feed title Sonarr/Radarr will parse: the cached series/movie
+/// prefix plus quality words taken from the release itself.
+fn compose_feed_title(title_prefix: &str, files: &[TorrentFile]) -> String {
+    format!("{title_prefix} {}", quality_suffix(files))
+}
+
+/// Quality words appended to the synthesized feed title, chosen from the
+/// release's largest file so the quality Sonarr/Radarr parses at grab time
+/// matches what it parses from the files at import time. Keywords are matched
+/// as whole tokens so words that merely contain them (like a show named
+/// "Cobweb") don't trigger. Falls back to the historical "Bluray 1080p remux"
+/// when the file names carry no signal.
+fn quality_suffix(files: &[TorrentFile]) -> &'static str {
+    let Some(name) = files
+        .iter()
+        .max_by_key(|file| file.length)
+        .map(|file| file.name.to_ascii_lowercase())
+    else {
+        return "Bluray 1080p remux";
+    };
+
+    let has = |keyword: &str| {
+        name.split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|token| token == keyword)
+    };
+
+    if has("remux") {
+        "Bluray 1080p remux"
+    } else if has("webrip") {
+        "1080p WEBRip"
+    } else if has("web") || has("webdl") {
+        "1080p WEB-DL"
+    } else if has("bluray") || has("bd") || has("bdrip") || name.contains("blu-ray") {
+        "Bluray 1080p"
+    } else {
+        "Bluray 1080p remux"
     }
 }
 
@@ -278,7 +317,7 @@ impl SearchService {
         let total = torrents.len();
 
         let feed_title = match self.radarr.as_ref().unwrap().resolve_name(tmdb_id).await {
-            Ok(movie) => format_movie_feed_title(&movie.title, movie.year),
+            Ok(movie) => format_movie_feed_prefix(&movie.title, movie.year),
             Err(RadarrError::NotFound { .. } | RadarrError::Api { .. }) => {
                 debug!(
                     tmdb_id,
@@ -514,7 +553,7 @@ impl SearchService {
                             .await
                             .expect("title lookup semaphore is never closed");
                         let title = match sonarr.resolve_name(tvdb_id).await {
-                            Ok(series_title) => Some(format_tv_feed_title(&series_title, season)),
+                            Ok(series_title) => Some(format_tv_feed_prefix(&series_title, season)),
                             Err(error) => {
                                 warn!(
                                     tvdb_id,
@@ -539,7 +578,7 @@ impl SearchService {
                             .await
                             .expect("title lookup semaphore is never closed");
                         let title = match radarr.resolve_name(tmdb_id).await {
-                            Ok(movie) => Some(format_movie_feed_title(&movie.title, movie.year)),
+                            Ok(movie) => Some(format_movie_feed_prefix(&movie.title, movie.year)),
                             Err(RadarrError::NotFound { .. } | RadarrError::Api { .. }) => {
                                 debug!(
                                     tmdb_id,
@@ -590,7 +629,7 @@ impl SearchService {
             .await
             .map_err(ServiceError::Sonarr)?;
         trace!(tvdb_id, %series_title, "resolved series title from sonarr");
-        Ok(format_tv_feed_title(&series_title, season))
+        Ok(format_tv_feed_prefix(&series_title, season))
     }
 
     fn format_allowed(&self, format: &MediaFormat) -> bool {
@@ -619,14 +658,14 @@ impl SearchService {
     fn process_torrents(
         &self,
         torrents: Vec<Torrent>,
-        title: String,
+        title_prefix: String,
         categories: Vec<u32>,
     ) -> Vec<TorznabItem> {
         torrents
             .into_iter()
             .map(|release| {
                 let seeders = priority_seeders(release.tracker, release.is_best);
-                self.build_torznab_item(release, title.clone(), categories.clone(), seeders)
+                self.build_torznab_item(release, title_prefix.clone(), categories.clone(), seeders)
             })
             .collect()
     }
@@ -636,7 +675,7 @@ impl SearchService {
     fn process_torrents_ranked(
         &self,
         torrents: Vec<Torrent>,
-        title: String,
+        title_prefix: String,
         categories: Vec<u32>,
         offset: usize,
         limit: usize,
@@ -650,7 +689,7 @@ impl SearchService {
             .take(limit)
             .map(|(release, preferred)| {
                 let seeders = priority_seeders(release.tracker, preferred);
-                self.build_torznab_item(release, title.clone(), categories.clone(), seeders)
+                self.build_torznab_item(release, title_prefix.clone(), categories.clone(), seeders)
             })
             .collect()
     }
@@ -666,10 +705,11 @@ impl SearchService {
     fn build_torznab_item(
         &self,
         torrent: Torrent,
-        title: String,
+        title_prefix: String,
         categories: Vec<u32>,
         seeders: u32,
     ) -> TorznabItem {
+        let title = compose_feed_title(&title_prefix, &torrent.files);
         let Torrent {
             id,
             download_url,
@@ -755,5 +795,87 @@ impl SearchService {
                 if !any_values { true } else { matches_supported }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(name: &str, length: u64) -> TorrentFile {
+        TorrentFile {
+            name: name.to_string(),
+            length,
+        }
+    }
+
+    #[test]
+    fn web_release_gets_web_dl_suffix() {
+        let files = vec![file(
+            "[Kaizoku] Jujutsu Kaisen - 59v2 (WEB 1080p HEVC EAC-3) [DDFF533D].mkv",
+            1_500_000_000,
+        )];
+        assert_eq!(quality_suffix(&files), "1080p WEB-DL");
+    }
+
+    #[test]
+    fn webrip_release_gets_webrip_suffix() {
+        let files = vec![file("[Group] Show - 01 (WEBRip 1080p).mkv", 1)];
+        assert_eq!(quality_suffix(&files), "1080p WEBRip");
+    }
+
+    #[test]
+    fn bd_encode_gets_bluray_suffix() {
+        let files = vec![file(
+            "[Almighty] Jujutsu Kaisen S3 Vol.1 [BD 1920x1080 x264 FLAC][Multiple subs].mkv",
+            2_000_000_000,
+        )];
+        assert_eq!(quality_suffix(&files), "Bluray 1080p");
+    }
+
+    #[test]
+    fn remux_release_keeps_remux_suffix() {
+        let files = vec![file("Show.S01E01.1080p.BluRay.Remux.AVC.FLAC.2.0.mkv", 1)];
+        assert_eq!(quality_suffix(&files), "Bluray 1080p remux");
+    }
+
+    #[test]
+    fn no_files_falls_back_to_remux() {
+        assert_eq!(quality_suffix(&[]), "Bluray 1080p remux");
+    }
+
+    #[test]
+    fn largest_file_decides_the_suffix() {
+        let files = vec![
+            file("NCOP [BD 1080p].mkv", 50),
+            file("[Group] Show - 01 (WEB 1080p).mkv", 5_000),
+        ];
+        assert_eq!(quality_suffix(&files), "1080p WEB-DL");
+    }
+
+    #[test]
+    fn keywords_match_as_whole_tokens_only() {
+        assert_eq!(
+            quality_suffix(&[file("Dubbed Show - 01.mkv", 1)]),
+            "Bluray 1080p remux"
+        );
+        assert_eq!(
+            quality_suffix(&[file("Cobweb - 01 [BD 1080p].mkv", 1)]),
+            "Bluray 1080p"
+        );
+    }
+
+    #[test]
+    fn tv_title_composes_prefix_and_suffix() {
+        let files = vec![file("[Kaizoku] Jujutsu Kaisen - 47 (WEB 1080p).mkv", 1)];
+        let title = compose_feed_title(&format_tv_feed_prefix("JUJUTSU KAISEN", 3), &files);
+        assert_eq!(title, "JUJUTSU KAISEN S03 1080p WEB-DL");
+    }
+
+    #[test]
+    fn movie_title_composes_prefix_and_suffix() {
+        let files = vec![file("Movie.2023.1080p.WEB-DL.x264.mkv", 1)];
+        let title = compose_feed_title(&format_movie_feed_prefix("Movie", 2023), &files);
+        assert_eq!(title, "Movie (2023) 1080p WEB-DL");
     }
 }
