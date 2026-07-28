@@ -62,6 +62,53 @@ In Sonarr or Radarr:
 6. Go to **Settings → Profiles**
 7. Click on your profile and give a high score to Seadex (Ex: 5000)
 
+<details>
+<summary>Setting up the custom format with recyclarr</summary>
+
+If [recyclarr](https://recyclarr.dev) manages your Sonarr/Radarr, you can define the custom format there instead of clicking it together in the UI, so it lives in your config with the rest of your setup.
+
+Save this next to your recyclarr config, for example as `custom-formats/sonarr/seadex.json`. For Radarr, change `"value": 64` to `512` (the two apps number their indexer flags differently).
+
+```json
+{
+  "trash_id": "seadex",
+  "name": "Seadex",
+  "includeCustomFormatWhenRenaming": false,
+  "specifications": [
+    {
+      "name": "Freeleech25",
+      "implementation": "IndexerFlagSpecification",
+      "negate": false,
+      "required": false,
+      "fields": { "value": 64 }
+    }
+  ]
+}
+```
+
+Point recyclarr at that folder in `settings.yml` (needs recyclarr 7.5.2 or newer):
+
+```yaml
+resource_providers:
+  - name: local-cfs-sonarr
+    type: custom-formats
+    path: /config/custom-formats/sonarr
+    service: sonarr
+```
+
+Then score it in your config like any other custom format:
+
+```yaml
+custom_formats:
+  - trash_ids:
+      - seadex
+    assign_scores_to:
+      - name: <your profile>
+        score: 5000
+```
+
+</details>
+
 ## Release Scoring
 
 When several releases exist for the same entry, Seadexerr picks the one you'd
