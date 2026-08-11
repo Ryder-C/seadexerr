@@ -32,13 +32,13 @@ struct CachedMappings {
 #[derive(Debug, Clone)]
 struct MappingEntry {
     anilist_id: i64,
-    seasons: Vec<String>,
+    season: u32,
 }
 
 #[derive(Debug, Clone)]
 struct ReverseMappingEntry {
     tvdb_id: i64,
-    seasons: Vec<String>,
+    season: u32,
 }
 
 #[derive(Debug)]
@@ -52,7 +52,7 @@ struct MappingIndex {
 #[derive(Debug, Clone)]
 pub struct TvdbMapping {
     pub tvdb_id: i64,
-    pub seasons: Vec<String>,
+    pub season: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -384,74 +384,20 @@ impl PlexAniBridgeMappings {
     }
 
     fn build_index(bytes: &[u8]) -> Result<MappingIndex> {
-        // Deserialise with borrowed keys and discard the season-range values via `IgnoredAny`.
-        let raw: HashMap<Cow<'_, str>, HashMap<Cow<'_, str>, IgnoredAny>> =
-            serde_json::from_slice(bytes)
+        // Stream the cache file straight into the index
+        // Saves alot of memory over deserializing the whole document into a `serde_json::Value`
+        let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+        let index =
+            serde::Deserializer::deserialize_map(&mut deserializer, IndexBuilder::default())
                 .context("failed to deserialise plexanibridge mapping file")?;
-
-        let mut tvdb_index: HashMap<i64, Vec<MappingEntry>> = HashMap::new();
-        let mut anilist_index: HashMap<i64, Vec<ReverseMappingEntry>> = HashMap::new();
-        let mut tmdb_index: HashMap<i64, i64> = HashMap::new();
-        let mut anilist_tmdb: HashMap<i64, i64> = HashMap::new();
-
-        for (source_key, targets) in &raw {
-            if source_key.starts_with('$') {
-                continue;
-            }
-
-            let Some(("anilist", id_str, _scope)) = parse_descriptor(source_key) else {
-                continue;
-            };
-
-            let Ok(anilist_id) = id_str.parse::<i64>() else {
-                debug!(source_key = %source_key, "skipping mapping with non-numeric anilist id");
-                continue;
-            };
-
-            for target_key in targets.keys() {
-                let Some((target_provider, target_id_str, target_scope)) =
-                    parse_descriptor(target_key)
-                else {
-                    continue;
-                };
-
-                if target_provider == "tvdb_show" {
-                    let Ok(tvdb_id) = target_id_str.parse::<i64>() else {
-                        continue;
-                    };
-                    let season = target_scope.unwrap_or("s1").to_owned();
-                    tvdb_index.entry(tvdb_id).or_default().push(MappingEntry {
-                        anilist_id,
-                        seasons: vec![season.clone()],
-                    });
-                    anilist_index
-                        .entry(anilist_id)
-                        .or_default()
-                        .push(ReverseMappingEntry {
-                            tvdb_id,
-                            seasons: vec![season],
-                        });
-                } else if target_provider == "tmdb_movie" {
-                    let Ok(tmdb_id) = target_id_str.parse::<i64>() else {
-                        continue;
-                    };
-                    tmdb_index.insert(tmdb_id, anilist_id);
-                    anilist_tmdb.insert(anilist_id, tmdb_id);
-                }
-            }
-        }
-
-        Ok(MappingIndex {
-            tvdb_to_entries: tvdb_index,
-            anilist_to_entries: anilist_index,
-            tmdb_to_anilist: tmdb_index,
-            anilist_to_tmdb: anilist_tmdb,
-        })
+        deserializer
+            .end()
+            .context("failed to deserialise plexanibridge mapping file")?;
+        Ok(index)
     }
 
     pub async fn resolve_anilist_id(&self, tvdb_id: i64, season: u32) -> Result<Option<i64>> {
         let mappings = self.index().await?;
-        let season_key = format!("s{season}");
 
         if let Some(entries) = mappings.tvdb_to_entries.get(&tvdb_id) {
             trace!(
@@ -462,7 +408,7 @@ impl PlexAniBridgeMappings {
             );
 
             for entry in entries {
-                if entry.seasons.iter().any(|key| key == &season_key) {
+                if entry.season == season {
                     trace!(
                         tvdb_id,
                         season,
@@ -511,13 +457,176 @@ impl PlexAniBridgeMappings {
                     .iter()
                     .map(|entry| TvdbMapping {
                         tvdb_id: entry.tvdb_id,
-                        seasons: entry.seasons.clone(),
+                        season: entry.season,
                     })
                     .collect()
             })
             .unwrap_or_default();
 
         Ok(result)
+    }
+}
+
+/// Streaming visitor over the top-level mappings object. Accumulates the four
+/// index maps while discarding everything that the index doesn't need.
+#[derive(Default)]
+struct IndexBuilder {
+    tvdb_to_entries: HashMap<i64, Vec<MappingEntry>>,
+    anilist_to_entries: HashMap<i64, Vec<ReverseMappingEntry>>,
+    tmdb_to_anilist: HashMap<i64, i64>,
+    anilist_to_tmdb: HashMap<i64, i64>,
+}
+
+impl IndexBuilder {
+    fn record_target(&mut self, anilist_id: i64, target_key: &str) {
+        let Some((provider, id_str, scope)) = parse_descriptor(target_key) else {
+            return;
+        };
+
+        if provider == "tvdb_show" {
+            let Ok(tvdb_id) = id_str.parse::<i64>() else {
+                return;
+            };
+            let Some(season) = parse_season_key(scope.unwrap_or("s1")) else {
+                return;
+            };
+            self.tvdb_to_entries
+                .entry(tvdb_id)
+                .or_default()
+                .push(MappingEntry { anilist_id, season });
+            self.anilist_to_entries
+                .entry(anilist_id)
+                .or_default()
+                .push(ReverseMappingEntry { tvdb_id, season });
+        } else if provider == "tmdb_movie" {
+            let Ok(tmdb_id) = id_str.parse::<i64>() else {
+                return;
+            };
+            self.tmdb_to_anilist.insert(tmdb_id, anilist_id);
+            self.anilist_to_tmdb.insert(anilist_id, tmdb_id);
+        }
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for IndexBuilder {
+    type Value = MappingIndex;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a map of provider descriptors to mapping objects")
+    }
+
+    fn visit_map<A>(mut self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        while let Some(CowStr(source_key)) = map.next_key::<CowStr<'_>>()? {
+            let anilist_id = if source_key.starts_with('$') {
+                None
+            } else {
+                match parse_descriptor(&source_key) {
+                    Some(("anilist", id_str, _scope)) => match id_str.parse::<i64>() {
+                        Ok(id) => Some(id),
+                        Err(_) => {
+                            debug!(source_key = %source_key, "skipping mapping with non-numeric anilist id");
+                            None
+                        }
+                    },
+                    _ => None,
+                }
+            };
+
+            match anilist_id {
+                Some(anilist_id) => map.next_value_seed(TargetsSeed {
+                    anilist_id,
+                    builder: &mut self,
+                })?,
+                None => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+
+        Ok(MappingIndex {
+            tvdb_to_entries: self.tvdb_to_entries,
+            anilist_to_entries: self.anilist_to_entries,
+            tmdb_to_anilist: self.tmdb_to_anilist,
+            anilist_to_tmdb: self.anilist_to_tmdb,
+        })
+    }
+}
+
+/// Streams one source entry's target map, recording each target key and
+/// discarding its value.
+struct TargetsSeed<'a> {
+    anilist_id: i64,
+    builder: &'a mut IndexBuilder,
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for TargetsSeed<'_> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_map(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for TargetsSeed<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a map of target descriptors")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        while let Some(CowStr(target_key)) = map.next_key::<CowStr<'_>>()? {
+            map.next_value::<IgnoredAny>()?;
+            self.builder.record_target(self.anilist_id, &target_key);
+        }
+        Ok(())
+    }
+}
+
+/// `Cow<str>` that borrows from the input when the deserializer allows it.
+/// serde's own `Cow` impl always allocates an owned copy.
+struct CowStr<'de>(Cow<'de, str>);
+
+impl<'de> serde::Deserialize<'de> for CowStr<'de> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct CowStrVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for CowStrVisitor {
+            type Value = CowStr<'de>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a string")
+            }
+
+            fn visit_borrowed_str<E: serde::de::Error>(
+                self,
+                v: &'de str,
+            ) -> Result<Self::Value, E> {
+                Ok(CowStr(Cow::Borrowed(v)))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(CowStr(Cow::Owned(v.to_owned())))
+            }
+
+            fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Self::Value, E> {
+                Ok(CowStr(Cow::Owned(v)))
+            }
+        }
+
+        deserializer.deserialize_str(CowStrVisitor)
     }
 }
 
@@ -529,7 +638,7 @@ fn parse_descriptor(key: &str) -> Option<(&str, &str, Option<&str>)> {
     Some((provider, id, scope))
 }
 
-pub(crate) fn parse_season_key(key: &str) -> Option<u32> {
+fn parse_season_key(key: &str) -> Option<u32> {
     if !key.starts_with('s') {
         return None;
     }
@@ -574,7 +683,7 @@ mod tests {
         assert_eq!(index.tvdb_to_entries.len(), 2);
         let entries = &index.tvdb_to_entries[&72025];
         assert_eq!(entries[0].anilist_id, 290);
-        assert_eq!(entries[0].seasons, vec!["s1".to_string()]);
+        assert_eq!(entries[0].season, 1);
         assert_eq!(index.anilist_to_entries[&290][0].tvdb_id, 72025);
 
         // tmdb_movie targets populate the movie maps both directions.
