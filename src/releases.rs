@@ -18,10 +18,9 @@ pub struct ReleasesClient {
 }
 
 impl ReleasesClient {
-    pub fn new(http: Client, ab_passkey: Option<&str>) -> Result<Self> {
+    pub fn new(http: Client, ab_passkey: Option<String>) -> Result<Self> {
         let base_url = Url::parse(RELEASES_BASE_URL)?;
 
-        let ab_passkey = ab_passkey.map(|k| k.to_string());
         Ok(Self {
             http,
             base_url,

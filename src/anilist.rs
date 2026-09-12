@@ -24,13 +24,22 @@ query MediaById($idIn: [Int], $perPage: Int) {
 pub struct AniListClient {
     http: Client,
     base_url: Url,
+    access_token: Option<String>,
 }
 
 impl AniListClient {
-    pub fn new(http: Client) -> anyhow::Result<Self> {
+    pub fn new(http: Client, access_token: Option<String>) -> anyhow::Result<Self> {
         let base_url = Url::parse(ANILIST_BASE_URL)?;
 
-        Ok(Self { http, base_url })
+        Ok(Self {
+            http,
+            base_url,
+            access_token,
+        })
+    }
+
+    pub fn is_authenticated(&self) -> bool {
+        self.access_token.is_some()
     }
 
     pub async fn fetch_media(
@@ -55,13 +64,14 @@ impl AniListClient {
                 },
             };
 
-            let response = self
-                .http
-                .post(self.base_url.clone())
-                .json(&request)
-                .send()
-                .await?
-                .error_for_status()?;
+            let mut builder = self.http.post(self.base_url.clone()).json(&request);
+
+            // Use the auth token if its available
+            if let Some(token) = &self.access_token {
+                builder = builder.bearer_auth(token);
+            }
+
+            let response = builder.send().await?.error_for_status()?;
 
             let payload: GraphqlResponse = response.json().await?;
 

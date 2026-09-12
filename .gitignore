@@ -3,3 +3,4 @@ compose.yaml
 data/
 .vscode
 .dev-env
+.env

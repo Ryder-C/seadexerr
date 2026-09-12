@@ -37,6 +37,7 @@ Most can be left as default
 | `SEADEXERR_SKIP_DEBAND`     | `false`                                                              | **Deprecated** - use `exclude_tags` in `scoring.toml`. Skip releases with the `Deband Required` tag.         |
 | `SEADEXERR_PREFER`          | `best`                                                               | **Deprecated** - use `scoring.toml`. Prefer `best`, `dual_audio`, or `smallest` when multiple options exist. |
 | `AB_PASSKEY`                | (optional)                                                           | AnimeBytes passkey. See [AnimeBytes Support](#animebytes-support).                                           |
+| `ANILIST_ACCESS_TOKEN`      | (optional)                                                           | AniList access token for authenticated API requests. See [AniList Authentication](#anilist-authentication).  |
 
 \* At least one of `SONARR_API_KEY` or `RADARR_API_KEY` must be provided. If only one is provided, the other service is disabled.
 
@@ -70,6 +71,17 @@ prefer. By default it favors the Best release. To change what wins, make a
 
 See [`example_scoring.toml`](example_scoring.toml) for a fully commented file.
 Every option has a default, so keep only what you care about.
+
+## AniList Authentication
+
+If you are getting rate limited or 403 errors you may want to authenticate your requests.
+To send authenticated requests:
+
+1. Go to `https://anilist.co/api/v2/oauth/authorize?client_id=50941&response_type=token`
+2. Click **Authorize** and copy the access token shown on the page
+3. Set `ANILIST_ACCESS_TOKEN` to that token
+
+Tokens are valid for one year.
 
 ## AnimeBytes Support
 

@@ -27,6 +27,7 @@ struct EnvConfig {
     #[serde(default = "default_radarr_url")]
     radarr_base_url: Url,
     ab_passkey: Option<String>,
+    anilist_access_token: Option<String>,
 
     // Deprecated, kept only to migrate setups without a scoring.toml.
     seadexerr_skip_deband: Option<bool>,
@@ -41,6 +42,7 @@ pub struct AppConfig {
     pub radarr: Option<RadarrConfig>,
     pub scoring: ScoringConfig,
     pub ab_passkey: Option<String>,
+    pub anilist_access_token: Option<String>,
 }
 
 impl AppConfig {
@@ -64,6 +66,7 @@ impl TryFrom<EnvConfig> for AppConfig {
             seadexerr_skip_deband,
             seadexerr_prefer,
             ab_passkey,
+            anilist_access_token,
         } = env_config;
 
         let listen_addr = SocketAddr::new(seadexerr_host, seadexerr_port);
@@ -95,6 +98,7 @@ impl TryFrom<EnvConfig> for AppConfig {
             radarr,
             scoring,
             ab_passkey,
+            anilist_access_token,
         })
     }
 }
@@ -147,6 +151,7 @@ mod tests {
             seadexerr_skip_deband: None,
             seadexerr_prefer: None,
             ab_passkey: None,
+            anilist_access_token: None,
         }
     }
 
