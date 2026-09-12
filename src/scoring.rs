@@ -2,7 +2,7 @@ use std::{collections::HashMap, path::Path};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::releases::Torrent;
 
@@ -48,21 +48,8 @@ impl Default for ScoringConfig {
 }
 
 impl ScoringConfig {
-    /// Load the scoring table from `<data_path>/scoring.toml` with prefer best default
-    pub fn load(
-        data_path: &Path,
-        prefer: Option<LegacyPreference>,
-        skip_deband: Option<bool>,
-    ) -> Result<Self> {
-        if prefer.is_some() {
-            warn!("SEADEXERR_PREFER is deprecated -- configure scoring in {SCORING_FILE} instead");
-        }
-        if skip_deband.is_some() {
-            warn!(
-                "SEADEXERR_SKIP_DEBAND is deprecated -- use exclude_tags in {SCORING_FILE} instead"
-            );
-        }
-
+    /// Load the scoring table from `<data_path>/scoring.toml`, falling back to defaults if absent
+    pub fn load(data_path: &Path) -> Result<Self> {
         let path = data_path.join(SCORING_FILE);
 
         match std::fs::read_to_string(&path) {
@@ -71,34 +58,8 @@ impl ScoringConfig {
                 toml::from_str(&contents)
                     .with_context(|| format!("failed to parse {}", path.display()))
             }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self::from_legacy(
-                prefer.unwrap_or_default(),
-                skip_deband.unwrap_or(false),
-            )),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(err) => Err(err).with_context(|| format!("failed to read {}", path.display())),
-        }
-    }
-
-    /// Build an equivalent scoring profile from the deprecated env settings.
-    fn from_legacy(prefer: LegacyPreference, skip_deband: bool) -> Self {
-        let (best, dual_audio, size_weight) = match prefer {
-            LegacyPreference::Best => (default_best(), 0, 0),
-            LegacyPreference::DualAudio => (0, 1, 0),
-            LegacyPreference::Smallest => (0, 0, -1),
-        };
-
-        let exclude_tags = if skip_deband {
-            vec![DEBAND_REQUIRED_TAG.to_string()]
-        } else {
-            Vec::new()
-        };
-
-        Self {
-            best,
-            dual_audio,
-            size_weight,
-            exclude_tags,
-            tags: HashMap::new(),
         }
     }
 
@@ -149,19 +110,6 @@ impl ScoringConfig {
         let best = scores.iter().copied().max().unwrap_or(0);
         scores.iter().map(|&score| score == best).collect()
     }
-}
-
-/// The exact releases.moe label for the Deband Required tag.
-const DEBAND_REQUIRED_TAG: &str = "Deband Required";
-
-/// The deprecated `SEADEXERR_PREFER` value, kept only to migrate old setups.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum LegacyPreference {
-    #[default]
-    Best,
-    DualAudio,
-    Smallest,
 }
 
 #[cfg(test)]
@@ -274,9 +222,9 @@ mod tests {
     }
 
     #[test]
-    fn load_without_file_or_env_prefers_best() {
+    fn load_without_file_uses_defaults() {
         let dir = tempfile::tempdir().unwrap();
-        let scoring = ScoringConfig::load(dir.path(), None, None).unwrap();
+        let scoring = ScoringConfig::load(dir.path()).unwrap();
         assert_eq!(scoring.best, default_best());
         assert_eq!(scoring.dual_audio, 0);
         assert_eq!(scoring.size_weight, 0);
@@ -287,7 +235,7 @@ mod tests {
     fn load_empty_file_matches_no_file() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(SCORING_FILE), "\n  \n").unwrap();
-        let scoring = ScoringConfig::load(dir.path(), None, None).unwrap();
+        let scoring = ScoringConfig::load(dir.path()).unwrap();
         assert_eq!(scoring.best, default_best());
         assert_eq!(scoring.dual_audio, 0);
         assert_eq!(scoring.size_weight, 0);
@@ -298,29 +246,7 @@ mod tests {
     fn load_reads_file_when_present() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(SCORING_FILE), "best = 42\n").unwrap();
-        let scoring = ScoringConfig::load(dir.path(), None, None).unwrap();
+        let scoring = ScoringConfig::load(dir.path()).unwrap();
         assert_eq!(scoring.best, 42);
-    }
-
-    #[test]
-    fn legacy_best_maps_to_best_weight() {
-        let scoring = ScoringConfig::from_legacy(LegacyPreference::Best, false);
-        assert_eq!(scoring.best, default_best());
-        assert_eq!(scoring.dual_audio, 0);
-        assert_eq!(scoring.size_weight, 0);
-        assert!(scoring.exclude_tags.is_empty());
-    }
-
-    #[test]
-    fn legacy_smallest_maps_to_size_weight() {
-        let scoring = ScoringConfig::from_legacy(LegacyPreference::Smallest, false);
-        assert_eq!(scoring.size_weight, -1);
-    }
-
-    #[test]
-    fn legacy_skip_deband_maps_to_exclude() {
-        let scoring = ScoringConfig::from_legacy(LegacyPreference::DualAudio, true);
-        assert_eq!(scoring.dual_audio, 1);
-        assert_eq!(scoring.exclude_tags, vec!["Deband Required".to_string()]);
     }
 }
