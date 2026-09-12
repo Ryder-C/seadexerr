@@ -120,7 +120,7 @@ fn default_host() -> IpAddr {
 }
 
 fn default_port() -> u16 {
-    6767
+    2071
 }
 
 fn default_sonarr_url() -> Url {
