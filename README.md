@@ -32,7 +32,7 @@ Most can be left as default
 | `RADARR_API_KEY`            | (optional\*)                                                         | Radarr API key used to resolve movie titles. Required if using Radarr.                                       |
 | `RADARR_BASE_URL`           | `http://localhost:7878/`                                             | Base URL for your Radarr instance.                                                                           |
 | `SEADEXERR_HOST`            | `0.0.0.0`                                                            | Interface the HTTP server listens on.                                                                        |
-| `SEADEXERR_PORT`            | `6767`                                                               | TCP port Seadexerr binds to. Must be a valid `u16`.                                                          |
+| `SEADEXERR_PORT`            | `2071`                                                               | TCP port Seadexerr binds to. Must be a valid `u16`.                                                          |
 | `SEADEXERR_PUBLIC_BASE_URL` | (optional; falls back to `http://{SEADEXERR_HOST}:{SEADEXERR_PORT}`) | Base URL advertised in the Torznab feed. Set when running behind a reverse proxy.                            |
 | `SEADEXERR_SKIP_DEBAND`     | `false`                                                              | **Deprecated** - use `exclude_tags` in `scoring.toml`. Skip releases with the `Deband Required` tag.         |
 | `SEADEXERR_PREFER`          | `best`                                                               | **Deprecated** - use `scoring.toml`. Prefer `best`, `dual_audio`, or `smallest` when multiple options exist. |
@@ -50,7 +50,7 @@ In Prowlarr:
 1. Click on **Add Indexer**
 2. Search for **Generic Torznab** and click it
 3. Change **Name** to `Seadexerr`
-4. Set **Url** to `http://seadexerr:6767`
+4. Set **Url** to `http://seadexerr:2071`
 5. Click **Test** and **Save**
 
 In Sonarr or Radarr:
