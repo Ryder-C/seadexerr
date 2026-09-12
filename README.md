@@ -25,19 +25,17 @@ services:
 <summary>Advanced Configuration</summary>
 Most can be left as default
 
-| Variable                    | Default                                                              | Purpose                                                                                                      |
-| --------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `SONARR_API_KEY`            | (optional\*)                                                         | Sonarr API key used to resolve series titles. Required if using Sonarr.                                      |
-| `SONARR_BASE_URL`           | `http://localhost:8989/`                                             | Base URL for your Sonarr instance.                                                                           |
-| `RADARR_API_KEY`            | (optional\*)                                                         | Radarr API key used to resolve movie titles. Required if using Radarr.                                       |
-| `RADARR_BASE_URL`           | `http://localhost:7878/`                                             | Base URL for your Radarr instance.                                                                           |
-| `SEADEXERR_HOST`            | `0.0.0.0`                                                            | Interface the HTTP server listens on.                                                                        |
-| `SEADEXERR_PORT`            | `2071`                                                               | TCP port Seadexerr binds to. Must be a valid `u16`.                                                          |
-| `SEADEXERR_PUBLIC_BASE_URL` | (optional; falls back to `http://{SEADEXERR_HOST}:{SEADEXERR_PORT}`) | Base URL advertised in the Torznab feed. Set when running behind a reverse proxy.                            |
-| `SEADEXERR_SKIP_DEBAND`     | `false`                                                              | **Deprecated** - use `exclude_tags` in `scoring.toml`. Skip releases with the `Deband Required` tag.         |
-| `SEADEXERR_PREFER`          | `best`                                                               | **Deprecated** - use `scoring.toml`. Prefer `best`, `dual_audio`, or `smallest` when multiple options exist. |
-| `AB_PASSKEY`                | (optional)                                                           | AnimeBytes passkey. See [AnimeBytes Support](#animebytes-support).                                           |
-| `ANILIST_ACCESS_TOKEN`      | (optional)                                                           | AniList access token for authenticated API requests. See [AniList Authentication](#anilist-authentication).  |
+| Variable                    | Default                                                              | Purpose                                                                                                     |
+| --------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `SONARR_API_KEY`            | (optional\*)                                                         | Sonarr API key used to resolve series titles. Required if using Sonarr.                                     |
+| `SONARR_BASE_URL`           | `http://localhost:8989/`                                             | Base URL for your Sonarr instance.                                                                          |
+| `RADARR_API_KEY`            | (optional\*)                                                         | Radarr API key used to resolve movie titles. Required if using Radarr.                                      |
+| `RADARR_BASE_URL`           | `http://localhost:7878/`                                             | Base URL for your Radarr instance.                                                                          |
+| `SEADEXERR_HOST`            | `0.0.0.0`                                                            | Interface the HTTP server listens on.                                                                       |
+| `SEADEXERR_PORT`            | `2071`                                                               | TCP port Seadexerr binds to. Must be a valid `u16`.                                                         |
+| `SEADEXERR_PUBLIC_BASE_URL` | (optional; falls back to `http://{SEADEXERR_HOST}:{SEADEXERR_PORT}`) | Base URL advertised in the Torznab feed. Set when running behind a reverse proxy.                           |
+| `AB_PASSKEY`                | (optional)                                                           | AnimeBytes passkey. See [AnimeBytes Support](#animebytes-support).                                          |
+| `ANILIST_ACCESS_TOKEN`      | (optional)                                                           | AniList access token for authenticated API requests. See [AniList Authentication](#anilist-authentication). |
 
 \* At least one of `SONARR_API_KEY` or `RADARR_API_KEY` must be provided. If only one is provided, the other service is disabled.
 
@@ -77,7 +75,7 @@ Every option has a default, so keep only what you care about.
 If you are getting rate limited or 403 errors you may want to authenticate your requests.
 To send authenticated requests:
 
-1. Go to `https://anilist.co/api/v2/oauth/authorize?client_id=50941&response_type=token`
+1. Go to [https://anilist.co/api/v2/oauth/authorize?client_id=50941&response_type=token](https://anilist.co/api/v2/oauth/authorize?client_id=50941&response_type=token)
 2. Click **Authorize** and copy the access token shown on the page
 3. Set `ANILIST_ACCESS_TOKEN` to that token
 

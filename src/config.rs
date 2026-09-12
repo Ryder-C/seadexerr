@@ -7,7 +7,7 @@ use anyhow::{Result, bail};
 use reqwest::Url;
 use serde::Deserialize;
 
-use crate::scoring::{LegacyPreference, ScoringConfig};
+use crate::scoring::ScoringConfig;
 
 pub const APPLICATION_TITLE: &str = "Seadexerr";
 pub const APPLICATION_DESCRIPTION: &str = "Indexer bridge for releases.moe";
@@ -28,10 +28,6 @@ struct EnvConfig {
     radarr_base_url: Url,
     ab_passkey: Option<String>,
     anilist_access_token: Option<String>,
-
-    // Deprecated, kept only to migrate setups without a scoring.toml.
-    seadexerr_skip_deband: Option<bool>,
-    seadexerr_prefer: Option<LegacyPreference>,
 }
 
 #[derive(Clone, Debug)]
@@ -63,8 +59,6 @@ impl TryFrom<EnvConfig> for AppConfig {
             sonarr_base_url,
             radarr_api_key,
             radarr_base_url,
-            seadexerr_skip_deband,
-            seadexerr_prefer,
             ab_passkey,
             anilist_access_token,
         } = env_config;
@@ -85,11 +79,7 @@ impl TryFrom<EnvConfig> for AppConfig {
             bail!("at least one of Sonarr or Radarr configuration must be provided");
         }
 
-        let scoring = ScoringConfig::load(
-            &default_data_path(),
-            seadexerr_prefer,
-            seadexerr_skip_deband,
-        )?;
+        let scoring = ScoringConfig::load(&default_data_path())?;
 
         Ok(AppConfig {
             listen_addr,
@@ -148,8 +138,6 @@ mod tests {
             sonarr_base_url: default_sonarr_url(),
             radarr_api_key: None,
             radarr_base_url: default_radarr_url(),
-            seadexerr_skip_deband: None,
-            seadexerr_prefer: None,
             ab_passkey: None,
             anilist_access_token: None,
         }
