@@ -35,14 +35,18 @@ async fn main() -> anyhow::Result<()> {
     let releases = ReleasesClient::new(http_client.clone(), config.ab_passkey.clone())
         .context("failed to construct releases.moe client")?;
 
-    let anilist = AniListClient::new(http_client.clone(), config.anilist_access_token.clone())
-        .context("failed to construct AniList client")?;
+    let data_path = config::default_data_path();
+
+    let anilist = AniListClient::new(
+        http_client.clone(),
+        config.anilist_access_token.clone(),
+        data_path.clone(),
+    )
+    .context("failed to construct AniList client")?;
 
     if anilist.is_authenticated() {
         tracing::info!("AniList requests will be authenticated");
     }
-
-    let data_path = config::default_data_path();
 
     let mappings = PlexAniBridgeMappings::bootstrap(data_path.clone())
         .await

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tokio::task;
-use tracing::trace;
+use tracing::{trace, warn};
 
 use crate::config::RadarrConfig;
 
@@ -109,7 +109,9 @@ impl RadarrClient {
 
         let movie = RadarrMovie { title, year };
 
-        self.store_movie(tmdb_id, &movie).await?;
+        if let Err(error) = self.store_movie(tmdb_id, &movie).await {
+            warn!(%error, "failed to save Radarr cache to disk");
+        }
 
         Ok(movie)
     }

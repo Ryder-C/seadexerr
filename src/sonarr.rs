@@ -96,7 +96,9 @@ impl SonarrClient {
             return Err(SonarrError::NotFound { tvdb_id });
         };
 
-        self.store_title(tvdb_id, &title).await?;
+        if let Err(error) = self.store_title(tvdb_id, &title).await {
+            warn!(%error, "failed to save Sonarr cache to disk");
+        }
 
         Ok(title)
     }
