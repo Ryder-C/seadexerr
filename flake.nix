@@ -40,6 +40,14 @@
 
             export RUST_LOG="info,seadexerr=debug"
 
+            # Load local overrides
+            if [ -f .env ]; then
+                set -a
+                source .env
+                set +a
+                echo "Loaded .env"
+            fi
+
             export SEADEXERR_DEV_ROOT="$PWD/.dev-env"
             mkdir -p "$SEADEXERR_DEV_ROOT"
 
