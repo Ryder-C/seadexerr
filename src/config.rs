@@ -1,9 +1,10 @@
 use std::{
+    fs,
     net::{IpAddr, SocketAddr},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use reqwest::Url;
 use serde::Deserialize;
 
@@ -21,13 +22,17 @@ struct EnvConfig {
     seadexerr_port: u16,
     seadexerr_public_base_url: Option<Url>,
     sonarr_api_key: Option<String>,
+    sonarr_api_key_file: Option<PathBuf>,
     #[serde(default = "default_sonarr_url")]
     sonarr_base_url: Url,
     radarr_api_key: Option<String>,
+    radarr_api_key_file: Option<PathBuf>,
     #[serde(default = "default_radarr_url")]
     radarr_base_url: Url,
     ab_passkey: Option<String>,
+    ab_passkey_file: Option<PathBuf>,
     anilist_access_token: Option<String>,
+    anilist_access_token_file: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -56,12 +61,25 @@ impl TryFrom<EnvConfig> for AppConfig {
             seadexerr_port,
             seadexerr_public_base_url,
             sonarr_api_key,
+            sonarr_api_key_file,
             sonarr_base_url,
             radarr_api_key,
+            radarr_api_key_file,
             radarr_base_url,
             ab_passkey,
+            ab_passkey_file,
             anilist_access_token,
+            anilist_access_token_file,
         } = env_config;
+
+        let sonarr_api_key = resolve_secret("SONARR_API_KEY", sonarr_api_key, sonarr_api_key_file)?;
+        let radarr_api_key = resolve_secret("RADARR_API_KEY", radarr_api_key, radarr_api_key_file)?;
+        let ab_passkey = resolve_secret("AB_PASSKEY", ab_passkey, ab_passkey_file)?;
+        let anilist_access_token = resolve_secret(
+            "ANILIST_ACCESS_TOKEN",
+            anilist_access_token,
+            anilist_access_token_file,
+        )?;
 
         let listen_addr = SocketAddr::new(seadexerr_host, seadexerr_port);
 
@@ -105,6 +123,27 @@ pub struct RadarrConfig {
     pub api_key: String,
 }
 
+/// Resolves a secret from either `NAME` or `NAME_FILE` (e.g. a Docker secret).
+fn resolve_secret(
+    name: &str,
+    value: Option<String>,
+    file: Option<PathBuf>,
+) -> Result<Option<String>> {
+    match (value, file) {
+        (Some(_), Some(_)) => bail!("both {name} and {name}_FILE are set; use only one"),
+        (Some(value), None) => Ok(Some(value)),
+        (None, Some(path)) => read_secret_file(&path)
+            .context(format!("failed to read {name}_FILE"))
+            .map(Some),
+        (None, None) => Ok(None),
+    }
+}
+
+fn read_secret_file(path: &Path) -> Result<String> {
+    let contents = fs::read_to_string(path).context(path.display().to_string())?;
+    Ok(contents.trim().to_owned())
+}
+
 fn default_host() -> IpAddr {
     IpAddr::from([0, 0, 0, 0])
 }
@@ -127,6 +166,8 @@ pub fn default_data_path() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
     use super::*;
 
     fn base_env() -> EnvConfig {
@@ -135,11 +176,15 @@ mod tests {
             seadexerr_port: default_port(),
             seadexerr_public_base_url: None,
             sonarr_api_key: None,
+            sonarr_api_key_file: None,
             sonarr_base_url: default_sonarr_url(),
             radarr_api_key: None,
+            radarr_api_key_file: None,
             radarr_base_url: default_radarr_url(),
             ab_passkey: None,
+            ab_passkey_file: None,
             anilist_access_token: None,
+            anilist_access_token_file: None,
         }
     }
 
@@ -177,5 +222,42 @@ mod tests {
         };
 
         assert!(AppConfig::try_from(env).is_ok());
+    }
+
+    #[test]
+    fn secret_from_file() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(file, "file-key").unwrap();
+
+        let env = EnvConfig {
+            sonarr_api_key_file: Some(file.path().to_owned()),
+            ..base_env()
+        };
+
+        let config = AppConfig::try_from(env).unwrap();
+        assert_eq!(config.sonarr.unwrap().api_key, "file-key");
+    }
+
+    #[test]
+    fn secret_value_and_file_conflict() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+
+        let env = EnvConfig {
+            radarr_api_key: Some("k".into()),
+            radarr_api_key_file: Some(file.path().to_owned()),
+            ..base_env()
+        };
+
+        assert!(AppConfig::try_from(env).is_err());
+    }
+
+    #[test]
+    fn secret_file_missing() {
+        let env = EnvConfig {
+            sonarr_api_key_file: Some("/nonexistent/seadexerr-secret".into()),
+            ..base_env()
+        };
+
+        assert!(AppConfig::try_from(env).is_err());
     }
 }
