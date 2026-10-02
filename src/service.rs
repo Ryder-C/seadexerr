@@ -27,15 +27,22 @@ enum TitleKey {
 }
 
 fn format_tv_feed_title(series_title: &str, season: u32) -> String {
-    format!("{series_title} S{season:02} Bluray 1080p remux")
+    format!("{series_title} S{season:02}")
 }
 
 fn format_movie_feed_title(title: &str, year: u32) -> String {
     if year == 0 {
-        format!("{title} Bluray 1080p remux")
+        title.to_string()
     } else {
-        format!("{title} ({year}) Bluray 1080p remux")
+        format!("{title} ({year})")
     }
+}
+
+/// Tags a feed title with the releases.moe record id, so a new SeaDex pick never
+/// reuses the title of an already imported one (#59). Parentheses keep the
+/// *arrs from parsing the id as a release group, as they would with brackets.
+fn format_release_title(feed_title: &str, record_id: &str) -> String {
+    format!("{feed_title} Bluray 1080p remux ({record_id})")
 }
 
 /// Seeder value to use for a torrent based on its tracker and preference.
@@ -687,7 +694,7 @@ impl SearchService {
         };
 
         TorznabItem {
-            title,
+            title: format_release_title(&title, &id),
             guid: id,
             link: download_url,
             comments,
@@ -742,5 +749,26 @@ impl SearchService {
                 if !any_values { true } else { matches_supported }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn release_title_includes_record_id() {
+        assert_eq!(
+            format_release_title(&format_tv_feed_title("Frieren", 1), "q1w2e3r4t5y6u7i"),
+            "Frieren S01 Bluray 1080p remux (q1w2e3r4t5y6u7i)"
+        );
+        assert_eq!(
+            format_release_title(&format_movie_feed_title("Akira", 1988), "q1w2e3r4t5y6u7i"),
+            "Akira (1988) Bluray 1080p remux (q1w2e3r4t5y6u7i)"
+        );
+        assert_eq!(
+            format_release_title(&format_movie_feed_title("Akira", 0), "q1w2e3r4t5y6u7i"),
+            "Akira Bluray 1080p remux (q1w2e3r4t5y6u7i)"
+        );
     }
 }
