@@ -8,7 +8,7 @@ use std::{
 use reqwest::Client;
 use serde::Deserialize;
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio::task;
 use tracing::{trace, warn};
 
@@ -21,6 +21,7 @@ pub struct SonarrClient {
     http: Client,
     config: SonarrConfig,
     cache: Arc<RwLock<HashMap<i64, String>>>,
+    persist_lock: Arc<Mutex<()>>,
     cache_path: PathBuf,
 }
 
@@ -34,6 +35,7 @@ impl SonarrClient {
             http,
             config,
             cache: Arc::new(RwLock::new(cache)),
+            persist_lock: Arc::new(Mutex::new(())),
             cache_path,
         })
     }
@@ -117,6 +119,8 @@ impl SonarrClient {
     }
 
     async fn persist_cache(&self) -> Result<(), SonarrError> {
+        let _lock = self.persist_lock.lock().await;
+
         // Clone snapshot under the read lock, then offload serialization + write
         // to a blocking thread to avoid blocking tokio worker threads.
         let snapshot = {
@@ -129,13 +133,7 @@ impl SonarrClient {
         let result = task::spawn_blocking(
             move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let json = serde_json::to_vec_pretty(&snapshot)?;
-
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-
-                std::fs::write(&path, json)?;
-
+                crate::fs::write_atomic(&path, &json)?;
                 Ok(())
             },
         )
@@ -292,5 +290,39 @@ mod tests {
 
         let reloaded = load_cache(&dir.path().join(CACHE_FILENAME)).unwrap();
         assert_eq!(reloaded.get(&42), Some(&"Naruto".to_string()));
+    }
+
+    #[tokio::test]
+    async fn concurrent_stores_do_not_corrupt_cache() {
+        let dir = TempDir::new().unwrap();
+        let client = make_client(&dir);
+
+        let mut handles = Vec::new();
+        for i in 0..50 {
+            let c = client.clone();
+            handles.push(tokio::spawn(async move {
+                c.store_title(
+                    i,
+                    &format!("Title {i} with some padding text to vary payload length {i}"),
+                )
+                .await
+                .unwrap();
+            }));
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        let reloaded = load_cache(&dir.path().join(CACHE_FILENAME)).unwrap();
+        assert_eq!(reloaded.len(), 50);
+        for i in 0..50 {
+            assert_eq!(
+                reloaded.get(&i),
+                Some(&format!(
+                    "Title {i} with some padding text to vary payload length {i}"
+                ))
+            );
+        }
     }
 }

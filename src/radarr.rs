@@ -8,7 +8,7 @@ use std::{
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio::task;
 use tracing::{trace, warn};
 
@@ -27,6 +27,7 @@ pub struct RadarrClient {
     http: Client,
     config: RadarrConfig,
     cache: Arc<RwLock<HashMap<i64, RadarrMovie>>>,
+    persist_lock: Arc<Mutex<()>>,
     cache_path: PathBuf,
 }
 
@@ -40,6 +41,7 @@ impl RadarrClient {
             http,
             config,
             cache: Arc::new(RwLock::new(cache)),
+            persist_lock: Arc::new(Mutex::new(())),
             cache_path,
         })
     }
@@ -130,6 +132,8 @@ impl RadarrClient {
     }
 
     async fn persist_cache(&self) -> Result<(), RadarrError> {
+        let _lock = self.persist_lock.lock().await;
+
         // Clone snapshot while holding the lock then offload CPU + IO to blocking thread.
         let snapshot = {
             let guard = self.cache.read().await;
@@ -141,13 +145,7 @@ impl RadarrClient {
         let result = task::spawn_blocking(
             move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let json = serde_json::to_vec_pretty(&snapshot)?;
-
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-
-                std::fs::write(&path, json)?;
-
+                crate::fs::write_atomic(&path, &json)?;
                 Ok(())
             },
         )
@@ -326,5 +324,39 @@ mod tests {
         let entry = reloaded.get(&42).expect("must persist");
         assert_eq!(entry.title, "Spirited Away");
         assert_eq!(entry.year, 2001);
+    }
+
+    #[tokio::test]
+    async fn concurrent_stores_do_not_corrupt_cache() {
+        let dir = TempDir::new().unwrap();
+        let client = make_client(&dir);
+
+        let mut handles = Vec::new();
+        for i in 0..50 {
+            let c = client.clone();
+            handles.push(tokio::spawn(async move {
+                c.store_movie(
+                    i,
+                    &RadarrMovie {
+                        title: format!("Movie {i} with padding text {i}"),
+                        year: 2000 + (i as u32),
+                    },
+                )
+                .await
+                .unwrap();
+            }));
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        let reloaded = load_cache(&dir.path().join(CACHE_FILENAME)).unwrap();
+        assert_eq!(reloaded.len(), 50);
+        for i in 0..50 {
+            let item = reloaded.get(&i).unwrap();
+            assert_eq!(item.title, format!("Movie {i} with padding text {i}"));
+            assert_eq!(item.year, 2000 + (i as u32));
+        }
     }
 }

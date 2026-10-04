@@ -10,7 +10,10 @@ use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use strum::EnumString;
 use thiserror::Error;
-use tokio::{sync::RwLock, task};
+use tokio::{
+    sync::{Mutex, RwLock},
+    task,
+};
 use tracing::{debug, trace, warn};
 
 const ANILIST_BASE_URL: &str = "https://graphql.anilist.co";
@@ -34,6 +37,7 @@ pub struct AniListClient {
     base_url: Url,
     access_token: Option<String>,
     cache: Arc<RwLock<HashMap<i64, MediaFormat>>>,
+    persist_lock: Arc<Mutex<()>>,
     cache_path: PathBuf,
 }
 
@@ -58,6 +62,7 @@ impl AniListClient {
             base_url,
             access_token,
             cache: Arc::new(RwLock::new(cache)),
+            persist_lock: Arc::new(Mutex::new(())),
             cache_path,
         })
     }
@@ -184,6 +189,8 @@ impl AniListClient {
     }
 
     async fn persist_cache(&self) -> Result<(), AniListError> {
+        let _lock = self.persist_lock.lock().await;
+
         // Clone snapshot under the read lock, then offload serialization + write
         // to a blocking thread to avoid blocking tokio worker threads.
         let snapshot = {
@@ -199,12 +206,7 @@ impl AniListClient {
 
         task::spawn_blocking(move || -> std::io::Result<()> {
             let json = serde_json::to_vec_pretty(&snapshot)?;
-
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-
-            std::fs::write(&path, json)
+            crate::fs::write_atomic(&path, &json)
         })
         .await
         .map_err(|source| write_err(std::io::Error::other(format!("join error: {source}"))))?
@@ -391,5 +393,33 @@ mod tests {
 
         let reloaded = load_cache(&client.cache_path).unwrap();
         assert_eq!(reloaded.get(&7), Some(&MediaFormat::Special));
+    }
+
+    #[tokio::test]
+    async fn concurrent_persist_cache_does_not_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = client(dir.path());
+
+        let mut handles = Vec::new();
+        for i in 0..50 {
+            let c = client.clone();
+            handles.push(tokio::spawn(async move {
+                {
+                    let mut guard = c.cache.write().await;
+                    guard.insert(i, MediaFormat::Tv);
+                }
+                c.persist_cache().await.unwrap();
+            }));
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        let reloaded = load_cache(&client.cache_path).unwrap();
+        assert_eq!(reloaded.len(), 50);
+        for i in 0..50 {
+            assert_eq!(reloaded.get(&i), Some(&MediaFormat::Tv));
+        }
     }
 }
