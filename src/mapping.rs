@@ -205,35 +205,20 @@ impl PlexAniBridgeMappings {
             .sum::<usize>();
         let index = Arc::new(index);
 
-        let temp_path = self.path.with_extension("json.tmp");
-        fs::write(&temp_path, &bytes).await.context(format!(
-            "failed to write mapping file at {}",
-            temp_path.display()
-        ))?;
-
-        match fs::rename(&temp_path, &self.path).await {
-            Ok(()) => {}
-            Err(err) if err.kind() == ErrorKind::AlreadyExists => {
-                fs::remove_file(&self.path).await.context(format!(
-                    "failed to remove mapping file at {}",
-                    self.path.display()
-                ))?;
-                fs::rename(&temp_path, &self.path).await.context(format!(
+        {
+            let path = self.path.clone();
+            task::spawn_blocking(move || crate::fs::write_atomic(&path, &bytes))
+                .await?
+                .context(format!(
                     "failed to write mapping file at {}",
                     self.path.display()
                 ))?;
-            }
-            Err(err) => {
-                bail!(
-                    "failed to write mapping file at {}: {err}",
-                    self.path.display()
-                );
-            }
         }
 
-        if let Some(ref etag) = new_etag {
-            fs::write(&etag_path, etag.as_bytes().to_vec())
-                .await
+        if let Some(etag) = new_etag.clone() {
+            let path = etag_path.clone();
+            task::spawn_blocking(move || crate::fs::write_atomic(&path, etag.as_bytes()))
+                .await?
                 .context(format!(
                     "failed to write mapping file at {}",
                     etag_path.display()

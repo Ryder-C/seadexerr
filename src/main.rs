@@ -1,5 +1,6 @@
 mod anilist;
 mod config;
+mod fs;
 mod http;
 mod mapping;
 mod radarr;
