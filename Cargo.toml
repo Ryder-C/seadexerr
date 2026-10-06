@@ -28,8 +28,10 @@ tokio = { version = "1.52.3", features = [
 ] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["fmt", "env-filter"] }
-tempfile = "3"
 url = { version = "2.5.8", features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [profile.release]
 lto = true
