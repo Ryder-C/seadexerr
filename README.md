@@ -39,6 +39,24 @@ Most can be left as default
 
 \* At least one of `SONARR_API_KEY` or `RADARR_API_KEY` must be provided. If only one is provided, the other service is disabled.
 
+### Docker Secrets
+
+`SONARR_API_KEY`, `RADARR_API_KEY`, `AB_PASSKEY` and `ANILIST_ACCESS_TOKEN` can also be read from a file by appending `_FILE` to the variable name. Set either the variable or its `_FILE` variant, not both.
+
+```yaml
+services:
+  seadexerr:
+    image: ghcr.io/ryder-c/seadexerr:latest
+    environment:
+      - SONARR_API_KEY_FILE=/run/secrets/sonarr_api_key
+    secrets:
+      - sonarr_api_key
+
+secrets:
+  sonarr_api_key:
+    file: ./sonarr_api_key.txt
+```
+
 </details>
 
 ## Prowlarr & Sonarr Integration
