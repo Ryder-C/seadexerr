@@ -20,6 +20,7 @@ time = { version = "0.3.47", features = ["formatting", "parsing"] }
 toml = "0.9"
 tokio = { version = "1.52.3", features = [
     "fs",
+    "io-util",
     "macros",
     "rt-multi-thread",
     "sync",
