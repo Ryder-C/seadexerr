@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::anilist::{AniListClient, AniListError, MediaFormat};
 use crate::config::AppConfig;
+use crate::ids::{AniListId, TmdbId, TvdbId};
 use crate::mapping::{PlexAniBridgeMappings, TvdbMapping};
 use crate::radarr::{RadarrClient, RadarrError};
 use crate::releases::{ReleasesClient, ReleasesError, Torrent, Tracker};
@@ -22,8 +22,8 @@ const MAX_CONCURRENT_TITLE_LOOKUPS: usize = 8;
 /// The upstream lookup a torrent's feed title comes from during a generic search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum TitleKey {
-    Tv { tvdb_id: i64, season: u32 },
-    Movie { tmdb_id: i64 },
+    Tv { tvdb_id: TvdbId, season: u32 },
+    Movie { tmdb_id: TmdbId },
 }
 
 fn format_tv_feed_title(series_title: &str, season: u32) -> String {
@@ -45,6 +45,16 @@ fn format_release_title(feed_title: &str, record_id: &str) -> String {
     format!("{feed_title} Bluray 1080p remux ({record_id})")
 }
 
+/// Picks the earliest regular season. Specials (season 0) are skipped because
+/// they map to individual episodes, not a whole season pack.
+fn select_tvdb_and_season(mappings: &[TvdbMapping]) -> Option<(TvdbId, u32)> {
+    mappings
+        .iter()
+        .filter(|mapping| mapping.season > 0)
+        .min_by_key(|mapping| mapping.season)
+        .map(|mapping| (mapping.tvdb_id, mapping.season))
+}
+
 /// Seeder value to use for a torrent based on its tracker and preference.
 /// A value needs to be 10x greater than the next lower value for Sonarr/Radarr to prioritize it.
 fn priority_seeders(tracker: Tracker, preferred: bool) -> u32 {
@@ -63,15 +73,12 @@ pub enum ServiceError {
     #[error(transparent)]
     Releases(#[from] ReleasesError),
     #[error(transparent)]
-    AniList(#[from] AniListError),
-    #[error(transparent)]
     Sonarr(#[from] SonarrError),
     #[error(transparent)]
     Radarr(#[from] RadarrError),
 }
 
 pub struct SearchService {
-    pub anilist: AniListClient,
     pub sonarr: Option<SonarrClient>,
     pub radarr: Option<RadarrClient>,
     pub releases: ReleasesClient,
@@ -81,7 +88,6 @@ pub struct SearchService {
 
 impl SearchService {
     pub fn new(
-        anilist: AniListClient,
         sonarr: Option<SonarrClient>,
         radarr: Option<RadarrClient>,
         releases: ReleasesClient,
@@ -89,7 +95,6 @@ impl SearchService {
         config: AppConfig,
     ) -> Self {
         Self {
-            anilist,
             sonarr,
             radarr,
             releases,
@@ -100,7 +105,7 @@ impl SearchService {
 
     pub async fn search_tv(
         &self,
-        tvdb_id: i64,
+        tvdb_id: TvdbId,
         season: u32,
         limit: Option<usize>,
         offset: Option<usize>,
@@ -115,7 +120,15 @@ impl SearchService {
             return Ok((Vec::new(), 0));
         }
 
-        trace!(tvdb_id, season, "resolving plexanibridge mapping");
+        if season == 0 {
+            debug!(
+                %tvdb_id,
+                "specials can't be advertised as a season pack; returning empty results"
+            );
+            return Ok((Vec::new(), 0));
+        }
+
+        trace!(%tvdb_id, season, "resolving plexanibridge mapping");
 
         let anilist_id = match self
             .mappings
@@ -126,14 +139,14 @@ impl SearchService {
             Some(id) => id,
             None => {
                 info!(
-                    tvdb_id,
+                    %tvdb_id,
                     season, "no anilist mapping found; returning empty result set"
                 );
                 return Ok((Vec::new(), 0));
             }
         };
 
-        trace!(tvdb_id, season, anilist_id, "querying releases.moe");
+        trace!(%tvdb_id, season, %anilist_id, "querying releases.moe");
 
         let collected: Vec<Torrent> = self
             .releases
@@ -143,40 +156,15 @@ impl SearchService {
 
         if collected.is_empty() {
             info!(
-                tvdb_id,
-                season, anilist_id, "no releases found on releases.moe; returning empty result set"
-            );
-            return Ok((Vec::new(), 0));
-        }
-
-        let media_lookup = self
-            .anilist
-            .fetch_media(&[anilist_id])
-            .await
-            .map_err(ServiceError::AniList)?;
-
-        let Some(media) = media_lookup.get(&anilist_id) else {
-            debug!(
-                tvdb_id,
-                season, anilist_id, "AniList media missing; returning empty result set"
-            );
-            return Ok((Vec::new(), 0));
-        };
-
-        if !self.format_allowed(&media.format) {
-            debug!(
-                tvdb_id,
-                season,
-                anilist_id,
-                format = ?media.format,
-                "AniList format currently unsupported; returning empty result set"
+                %tvdb_id,
+                season, %anilist_id, "no releases found on releases.moe; returning empty result set"
             );
             return Ok((Vec::new(), 0));
         }
 
         let torrents: Vec<Torrent> = collected
             .into_iter()
-            .filter(|item| item.file_count > 1)
+            .filter(|item| item.feature_count > 1)
             .filter(|item| !self.is_excluded(item))
             .collect();
         let total = torrents.len();
@@ -185,7 +173,7 @@ impl SearchService {
             Ok(title) => title,
             Err(ServiceError::Sonarr(SonarrError::Api { .. } | SonarrError::NotFound { .. })) => {
                 debug!(
-                    tvdb_id,
+                    %tvdb_id,
                     season, "Sonarr series lookup failed; returning empty result set"
                 );
                 return Ok((Vec::new(), 0));
@@ -205,7 +193,7 @@ impl SearchService {
 
     pub async fn search_movie(
         &self,
-        tmdb_id: i64,
+        tmdb_id: TmdbId,
         limit: Option<usize>,
         offset: Option<usize>,
     ) -> Result<(Vec<TorznabItem>, usize), ServiceError> {
@@ -228,7 +216,7 @@ impl SearchService {
             Some(id) => id,
             None => {
                 info!(
-                    tmdb_id,
+                    %tmdb_id,
                     "no anilist mapping found for movie-search; returning empty result set"
                 );
                 return Ok((Vec::new(), 0));
@@ -236,8 +224,8 @@ impl SearchService {
         };
 
         trace!(
-            tmdb_id,
-            anilist_id, limit, "movie-search querying releases.moe"
+            %tmdb_id,
+            %anilist_id, limit, "movie-search querying releases.moe"
         );
 
         let collected: Vec<Torrent> = self
@@ -248,38 +236,15 @@ impl SearchService {
 
         if collected.is_empty() {
             info!(
-                tmdb_id,
-                anilist_id, "no releases found on releases.moe; returning empty result set"
-            );
-            return Ok((Vec::new(), 0));
-        }
-
-        let media_lookup = self
-            .anilist
-            .fetch_media(&[anilist_id])
-            .await
-            .map_err(ServiceError::AniList)?;
-
-        let Some(media) = media_lookup.get(&anilist_id) else {
-            debug!(
-                tmdb_id,
-                anilist_id, "AniList media missing for movie-search; returning empty result set"
-            );
-            return Ok((Vec::new(), 0));
-        };
-
-        if !self.movie_format_allowed(&media.format) {
-            debug!(
-                tmdb_id,
-                anilist_id,
-                format = ?media.format,
-                "AniList format unsupported for movie-search"
+                %tmdb_id,
+                %anilist_id, "no releases found on releases.moe; returning empty result set"
             );
             return Ok((Vec::new(), 0));
         }
 
         let torrents: Vec<Torrent> = collected
             .into_iter()
+            .filter(|item| item.feature_count == 1)
             .filter(|item| !self.is_excluded(item))
             .collect();
         let total = torrents.len();
@@ -288,7 +253,7 @@ impl SearchService {
             Ok(movie) => format_movie_feed_title(&movie.title, movie.year),
             Err(RadarrError::NotFound { .. } | RadarrError::Api { .. }) => {
                 debug!(
-                    tmdb_id,
+                    %tmdb_id,
                     "Radarr movie lookup failed; returning empty result set"
                 );
                 return Ok((Vec::new(), 0));
@@ -374,98 +339,35 @@ impl SearchService {
             })
             .collect();
 
-        let anilist_ids: Vec<i64> = torrents
-            .iter()
-            .filter_map(|torrent| torrent.anilist_id)
-            .collect();
+        // Advertise each torrent under every title its AniList entry is mapped to,
+        // so an entry mapped to both a TV season and a movie reaches both arrs.
+        let mut targets: Vec<(Torrent, TitleKey)> = Vec::new();
 
-        let media_lookup = self
-            .anilist
-            .fetch_media(&anilist_ids)
-            .await
-            .map_err(ServiceError::AniList)?;
-
-        let mut eligible: Vec<Torrent> = Vec::new();
-
-        for torrent in torrents.into_iter() {
+        for torrent in torrents {
             let Some(anilist_id) = torrent.anilist_id else {
                 continue;
             };
 
-            let Some(media) = media_lookup.get(&anilist_id) else {
+            if self.is_excluded(&torrent) {
                 continue;
-            };
+            }
 
-            let include = match &media.format {
-                MediaFormat::Movie => true,
-                format if self.format_allowed(format) => torrent.file_count > 1,
-                _ => false,
-            };
-
-            if include && !self.is_excluded(&torrent) {
-                eligible.push(torrent);
+            match self.title_keys(&torrent, anilist_id).await {
+                Ok(keys) => targets.extend(keys.into_iter().map(|key| (torrent.clone(), key))),
+                Err(error) => warn!(
+                    torrent_id = %torrent.id,
+                    %error,
+                    "failed to resolve titles for generic search; skipping"
+                ),
             }
         }
 
-        let total = eligible.len();
-        let window: Vec<Torrent> = eligible.into_iter().skip(offset).take(limit).collect();
+        let total = targets.len();
+        let targets: Vec<(Torrent, TitleKey)> =
+            targets.into_iter().skip(offset).take(limit).collect();
 
-        if window.is_empty() {
+        if targets.is_empty() {
             return Ok((Vec::new(), total));
-        }
-
-        // Resolve each torrent to its title lookup key via the in-memory mapping index.
-        let mut targets: Vec<(Torrent, TitleKey)> = Vec::with_capacity(window.len());
-
-        for torrent in window.into_iter() {
-            let Some(anilist_id) = torrent.anilist_id else {
-                continue;
-            };
-
-            let Some(media) = media_lookup.get(&anilist_id) else {
-                continue;
-            };
-
-            match &media.format {
-                format if self.format_allowed(format) && self.sonarr.is_some() => {
-                    let mappings = match self.mappings.resolve_tvdb_mappings(anilist_id).await {
-                        Ok(mappings) => mappings,
-                        Err(error) => {
-                            let error = ServiceError::Mapping(error);
-                            warn!(
-                                torrent_id = %torrent.id,
-                                %error,
-                                "failed to resolve tv title for generic search; skipping"
-                            );
-                            continue;
-                        }
-                    };
-                    let Some((tvdb_id, season)) = self.select_tvdb_and_season(&mappings) else {
-                        debug!(torrent_id = %torrent.id, "no tv title resolved for generic search; skipping");
-                        continue;
-                    };
-                    targets.push((torrent, TitleKey::Tv { tvdb_id, season }));
-                }
-                MediaFormat::Movie if self.radarr.is_some() => {
-                    match self.mappings.resolve_tmdb_id(anilist_id).await {
-                        Ok(Some(tmdb_id)) => {
-                            targets.push((torrent, TitleKey::Movie { tmdb_id }));
-                        }
-                        Ok(None) => {
-                            debug!(torrent_id = %torrent.id, "no movie title resolved for generic search; skipping");
-                        }
-                        Err(error) => {
-                            let error = ServiceError::Mapping(error);
-                            warn!(
-                                torrent_id = %torrent.id,
-                                %error,
-                                "failed to resolve movie title for generic search; skipping"
-                            );
-                        }
-                    }
-                }
-                _ => {}
-            }
         }
 
         // Resolve each unique key against Sonarr/Radarr concurrently.
@@ -524,7 +426,7 @@ impl SearchService {
                             Ok(series_title) => Some(format_tv_feed_title(&series_title, season)),
                             Err(error) => {
                                 warn!(
-                                    tvdb_id,
+                                    %tvdb_id,
                                     %error,
                                     "failed to resolve tv title for generic search; skipping"
                                 );
@@ -549,14 +451,14 @@ impl SearchService {
                             Ok(movie) => Some(format_movie_feed_title(&movie.title, movie.year)),
                             Err(RadarrError::NotFound { .. } | RadarrError::Api { .. }) => {
                                 debug!(
-                                    tmdb_id,
+                                    %tmdb_id,
                                     "no movie title resolved for generic search; skipping"
                                 );
                                 None
                             }
                             Err(error) => {
                                 warn!(
-                                    tmdb_id,
+                                    %tmdb_id,
                                     %error,
                                     "failed to resolve movie title for generic search; skipping"
                                 );
@@ -584,10 +486,10 @@ impl SearchService {
 
     pub async fn resolve_feed_title(
         &self,
-        tvdb_id: i64,
+        tvdb_id: TvdbId,
         season: u32,
     ) -> Result<String, ServiceError> {
-        trace!(tvdb_id, season, "resolving title from sonarr");
+        trace!(%tvdb_id, season, "resolving title from sonarr");
         let sonarr = self
             .sonarr
             .as_ref()
@@ -596,19 +498,42 @@ impl SearchService {
             .resolve_name(tvdb_id)
             .await
             .map_err(ServiceError::Sonarr)?;
-        trace!(tvdb_id, %series_title, "resolved series title from sonarr");
+        trace!(%tvdb_id, %series_title, "resolved series title from sonarr");
         Ok(format_tv_feed_title(&series_title, season))
     }
 
-    fn format_allowed(&self, format: &MediaFormat) -> bool {
-        matches!(
-            format,
-            MediaFormat::Tv | MediaFormat::TvShort | MediaFormat::Ona
-        )
-    }
+    /// The Sonarr and Radarr titles a torrent can be advertised under. A single
+    /// feature is a movie, several are a season pack.
+    async fn title_keys(
+        &self,
+        torrent: &Torrent,
+        anilist_id: AniListId,
+    ) -> Result<Vec<TitleKey>, ServiceError> {
+        let mut keys = Vec::new();
 
-    fn movie_format_allowed(&self, format: &MediaFormat) -> bool {
-        matches!(format, MediaFormat::Movie)
+        if self.sonarr.is_some() && torrent.feature_count > 1 {
+            let mappings = self
+                .mappings
+                .resolve_tvdb_mappings(anilist_id)
+                .await
+                .map_err(ServiceError::Mapping)?;
+            if let Some((tvdb_id, season)) = select_tvdb_and_season(&mappings) {
+                keys.push(TitleKey::Tv { tvdb_id, season });
+            }
+        }
+
+        if self.radarr.is_some()
+            && torrent.feature_count == 1
+            && let Some(tmdb_id) = self
+                .mappings
+                .resolve_tmdb_id(anilist_id)
+                .await
+                .map_err(ServiceError::Mapping)?
+        {
+            keys.push(TitleKey::Movie { tmdb_id });
+        }
+
+        Ok(keys)
     }
 
     fn tv_category_ids(&self) -> Vec<u32> {
@@ -707,19 +632,6 @@ impl SearchService {
         }
     }
 
-    fn select_tvdb_and_season(&self, mappings: &[TvdbMapping]) -> Option<(i64, u32)> {
-        let mut best: Option<(i64, u32)> = None;
-
-        for mapping in mappings {
-            match best {
-                Some((_, current)) if mapping.season >= current => {}
-                _ => best = Some((mapping.tvdb_id, mapping.season)),
-            }
-        }
-
-        best
-    }
-
     fn category_filter_matches(&self, cat_param: &Option<String>) -> bool {
         match cat_param {
             None => true,
@@ -755,6 +667,20 @@ impl SearchService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tvdb_season_selection_skips_specials() {
+        let mapping = |tvdb_id, season| TvdbMapping {
+            tvdb_id: TvdbId(tvdb_id),
+            season,
+        };
+
+        assert_eq!(
+            select_tvdb_and_season(&[mapping(1, 0), mapping(1, 3), mapping(2, 2)]),
+            Some((TvdbId(2), 2))
+        );
+        assert_eq!(select_tvdb_and_season(&[mapping(1, 0)]), None);
+    }
 
     #[test]
     fn release_title_includes_record_id() {

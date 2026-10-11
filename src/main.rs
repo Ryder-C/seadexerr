@@ -1,7 +1,7 @@
-mod anilist;
 mod config;
 mod fs;
 mod http;
+mod ids;
 mod mapping;
 mod radarr;
 mod releases;
@@ -16,7 +16,6 @@ use anyhow::Context;
 use tokio::net::TcpListener;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::anilist::AniListClient;
 use crate::config::AppConfig;
 use crate::mapping::PlexAniBridgeMappings;
 use crate::radarr::RadarrClient;
@@ -37,17 +36,6 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to construct releases.moe client")?;
 
     let data_path = config::default_data_path();
-
-    let anilist = AniListClient::new(
-        http_client.clone(),
-        config.anilist_access_token.clone(),
-        data_path.clone(),
-    )
-    .context("failed to construct AniList client")?;
-
-    if anilist.is_authenticated() {
-        tracing::info!("AniList requests will be authenticated");
-    }
 
     let mappings = PlexAniBridgeMappings::bootstrap(data_path.clone())
         .await
@@ -74,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to construct Radarr client")?;
 
     let state = Arc::new(SearchService::new(
-        anilist, sonarr, radarr, releases, mappings, config,
+        sonarr, radarr, releases, mappings, config,
     ));
 
     let app = http::router(state.clone());

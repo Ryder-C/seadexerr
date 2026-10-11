@@ -17,6 +17,7 @@ use tokio::task;
 use tracing::{debug, trace, warn};
 
 use crate::http;
+use crate::ids::{AniListId, TmdbId, TvdbId};
 
 pub const SOURCE_URL: &str =
     "https://github.com/anibridge/anibridge-mappings/releases/latest/download/mappings.min.json";
@@ -31,27 +32,27 @@ struct CachedMappings {
 
 #[derive(Debug, Clone)]
 struct MappingEntry {
-    anilist_id: i64,
+    anilist_id: AniListId,
     season: u32,
 }
 
 #[derive(Debug, Clone)]
 struct ReverseMappingEntry {
-    tvdb_id: i64,
+    tvdb_id: TvdbId,
     season: u32,
 }
 
 #[derive(Debug)]
 struct MappingIndex {
-    tvdb_to_entries: HashMap<i64, Vec<MappingEntry>>,
-    anilist_to_entries: HashMap<i64, Vec<ReverseMappingEntry>>,
-    tmdb_to_anilist: HashMap<i64, i64>,
-    anilist_to_tmdb: HashMap<i64, i64>,
+    tvdb_to_entries: HashMap<TvdbId, Vec<MappingEntry>>,
+    anilist_to_entries: HashMap<AniListId, Vec<ReverseMappingEntry>>,
+    tmdb_to_anilist: HashMap<TmdbId, AniListId>,
+    anilist_to_tmdb: HashMap<AniListId, TmdbId>,
 }
 
 #[derive(Debug, Clone)]
 pub struct TvdbMapping {
-    pub tvdb_id: i64,
+    pub tvdb_id: TvdbId,
     pub season: u32,
 }
 
@@ -381,12 +382,16 @@ impl PlexAniBridgeMappings {
         Ok(index)
     }
 
-    pub async fn resolve_anilist_id(&self, tvdb_id: i64, season: u32) -> Result<Option<i64>> {
+    pub async fn resolve_anilist_id(
+        &self,
+        tvdb_id: TvdbId,
+        season: u32,
+    ) -> Result<Option<AniListId>> {
         let mappings = self.index().await?;
 
         if let Some(entries) = mappings.tvdb_to_entries.get(&tvdb_id) {
             trace!(
-                tvdb_id,
+                %tvdb_id,
                 season,
                 candidates = entries.len(),
                 "found candidate mappings for tvdb id"
@@ -395,9 +400,9 @@ impl PlexAniBridgeMappings {
             for entry in entries {
                 if entry.season == season {
                     trace!(
-                        tvdb_id,
+                        %tvdb_id,
                         season,
-                        anilist_id = entry.anilist_id,
+                        anilist_id = %entry.anilist_id,
                         "matched mapping entry for season"
                     );
                     return Ok(Some(entry.anilist_id));
@@ -406,7 +411,7 @@ impl PlexAniBridgeMappings {
         }
 
         trace!(
-            tvdb_id,
+            %tvdb_id,
             season,
             path = %self.path.display(),
             "no season-specific mapping found in local mappings file"
@@ -415,23 +420,23 @@ impl PlexAniBridgeMappings {
         Ok(None)
     }
 
-    pub async fn resolve_anilist_id_for_tmdb(&self, tmdb_id: i64) -> Result<Option<i64>> {
+    pub async fn resolve_anilist_id_for_tmdb(&self, tmdb_id: TmdbId) -> Result<Option<AniListId>> {
         let mappings = self.index().await?;
         if let Some(anilist_id) = mappings.tmdb_to_anilist.get(&tmdb_id) {
-            trace!(tmdb_id, anilist_id, "resolved tmdb mapping");
+            trace!(%tmdb_id, %anilist_id, "resolved tmdb mapping");
             Ok(Some(*anilist_id))
         } else {
-            trace!(tmdb_id, "no tmdb mapping found");
+            trace!(%tmdb_id, "no tmdb mapping found");
             Ok(None)
         }
     }
 
-    pub async fn resolve_tmdb_id(&self, anilist_id: i64) -> Result<Option<i64>> {
+    pub async fn resolve_tmdb_id(&self, anilist_id: AniListId) -> Result<Option<TmdbId>> {
         let mappings = self.index().await?;
         Ok(mappings.anilist_to_tmdb.get(&anilist_id).copied())
     }
 
-    pub async fn resolve_tvdb_mappings(&self, anilist_id: i64) -> Result<Vec<TvdbMapping>> {
+    pub async fn resolve_tvdb_mappings(&self, anilist_id: AniListId) -> Result<Vec<TvdbMapping>> {
         let mappings = self.index().await?;
 
         let result = mappings
@@ -456,20 +461,20 @@ impl PlexAniBridgeMappings {
 /// index maps while discarding everything that the index doesn't need.
 #[derive(Default)]
 struct IndexBuilder {
-    tvdb_to_entries: HashMap<i64, Vec<MappingEntry>>,
-    anilist_to_entries: HashMap<i64, Vec<ReverseMappingEntry>>,
-    tmdb_to_anilist: HashMap<i64, i64>,
-    anilist_to_tmdb: HashMap<i64, i64>,
+    tvdb_to_entries: HashMap<TvdbId, Vec<MappingEntry>>,
+    anilist_to_entries: HashMap<AniListId, Vec<ReverseMappingEntry>>,
+    tmdb_to_anilist: HashMap<TmdbId, AniListId>,
+    anilist_to_tmdb: HashMap<AniListId, TmdbId>,
 }
 
 impl IndexBuilder {
-    fn record_target(&mut self, anilist_id: i64, target_key: &str) {
+    fn record_target(&mut self, anilist_id: AniListId, target_key: &str) {
         let Some((provider, id_str, scope)) = parse_descriptor(target_key) else {
             return;
         };
 
         if provider == "tvdb_show" {
-            let Ok(tvdb_id) = id_str.parse::<i64>() else {
+            let Ok(tvdb_id) = id_str.parse::<TvdbId>() else {
                 return;
             };
             let Some(season) = parse_season_key(scope.unwrap_or("s1")) else {
@@ -484,7 +489,7 @@ impl IndexBuilder {
                 .or_default()
                 .push(ReverseMappingEntry { tvdb_id, season });
         } else if provider == "tmdb_movie" {
-            let Ok(tmdb_id) = id_str.parse::<i64>() else {
+            let Ok(tmdb_id) = id_str.parse::<TmdbId>() else {
                 return;
             };
             self.tmdb_to_anilist.insert(tmdb_id, anilist_id);
@@ -509,7 +514,7 @@ impl<'de> serde::de::Visitor<'de> for IndexBuilder {
                 None
             } else {
                 match parse_descriptor(&source_key) {
-                    Some(("anilist", id_str, _scope)) => match id_str.parse::<i64>() {
+                    Some(("anilist", id_str, _scope)) => match id_str.parse::<AniListId>() {
                         Ok(id) => Some(id),
                         Err(_) => {
                             debug!(source_key = %source_key, "skipping mapping with non-numeric anilist id");
@@ -543,7 +548,7 @@ impl<'de> serde::de::Visitor<'de> for IndexBuilder {
 /// Streams one source entry's target map, recording each target key and
 /// discarding its value.
 struct TargetsSeed<'a> {
-    anilist_id: i64,
+    anilist_id: AniListId,
     builder: &'a mut IndexBuilder,
 }
 
@@ -666,16 +671,19 @@ mod tests {
 
         // tvdb_show targets are indexed both directions, keyed by season scope.
         assert_eq!(index.tvdb_to_entries.len(), 2);
-        let entries = &index.tvdb_to_entries[&72025];
-        assert_eq!(entries[0].anilist_id, 290);
+        let entries = &index.tvdb_to_entries[&TvdbId(72025)];
+        assert_eq!(entries[0].anilist_id, AniListId(290));
         assert_eq!(entries[0].season, 1);
-        assert_eq!(index.anilist_to_entries[&290][0].tvdb_id, 72025);
+        assert_eq!(
+            index.anilist_to_entries[&AniListId(290)][0].tvdb_id,
+            TvdbId(72025)
+        );
 
         // tmdb_movie targets populate the movie maps both directions.
-        assert_eq!(index.tmdb_to_anilist[&12345], 500);
-        assert_eq!(index.anilist_to_tmdb[&500], 12345);
+        assert_eq!(index.tmdb_to_anilist[&TmdbId(12345)], AniListId(500));
+        assert_eq!(index.anilist_to_tmdb[&AniListId(500)], TmdbId(12345));
 
         // `$meta` and non-anilist source keys are ignored.
-        assert!(!index.tvdb_to_entries.contains_key(&1));
+        assert!(!index.tvdb_to_entries.contains_key(&TvdbId(1)));
     }
 }

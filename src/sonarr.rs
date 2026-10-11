@@ -13,6 +13,7 @@ use tokio::task;
 use tracing::{trace, warn};
 
 use crate::config::SonarrConfig;
+use crate::ids::TvdbId;
 
 const CACHE_FILENAME: &str = "sonarr_titles.json";
 
@@ -20,7 +21,7 @@ const CACHE_FILENAME: &str = "sonarr_titles.json";
 pub struct SonarrClient {
     http: Client,
     config: SonarrConfig,
-    cache: Arc<RwLock<HashMap<i64, String>>>,
+    cache: Arc<RwLock<HashMap<TvdbId, String>>>,
     persist_lock: Arc<Mutex<()>>,
     cache_path: PathBuf,
 }
@@ -40,9 +41,9 @@ impl SonarrClient {
         })
     }
 
-    pub async fn resolve_name(&self, tvdb_id: i64) -> Result<String, SonarrError> {
+    pub async fn resolve_name(&self, tvdb_id: TvdbId) -> Result<String, SonarrError> {
         if let Some(cached) = self.cached_title(tvdb_id).await {
-            trace!(tvdb_id, "using cached Sonarr title");
+            trace!(%tvdb_id, "using cached Sonarr title");
             return Ok(cached);
         }
 
@@ -58,7 +59,7 @@ impl SonarrClient {
         }
 
         trace!(
-            tvdb_id,
+            %tvdb_id,
             url = %url,
             "requesting Sonarr series lookup"
         );
@@ -74,7 +75,7 @@ impl SonarrClient {
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             warn!(
-                tvdb_id,
+                %tvdb_id,
                 status = status.as_u16(),
                 body = %body,
                 "Sonarr series lookup returned non-success status"
@@ -89,7 +90,7 @@ impl SonarrClient {
         let payload: Vec<SeriesLookupEntry> = response.json().await?;
 
         trace!(
-            tvdb_id,
+            %tvdb_id,
             results = payload.len(),
             "Sonarr series lookup response received"
         );
@@ -105,12 +106,12 @@ impl SonarrClient {
         Ok(title)
     }
 
-    async fn cached_title(&self, tvdb_id: i64) -> Option<String> {
+    async fn cached_title(&self, tvdb_id: TvdbId) -> Option<String> {
         let guard = self.cache.read().await;
         guard.get(&tvdb_id).cloned()
     }
 
-    async fn store_title(&self, tvdb_id: i64, title: &str) -> Result<(), SonarrError> {
+    async fn store_title(&self, tvdb_id: TvdbId, title: &str) -> Result<(), SonarrError> {
         {
             let mut guard = self.cache.write().await;
             guard.insert(tvdb_id, title.to_string());
@@ -160,7 +161,7 @@ struct SeriesLookupEntry {
     title: Option<String>,
 }
 
-fn load_cache(path: &Path) -> Result<HashMap<i64, String>, SonarrError> {
+fn load_cache(path: &Path) -> Result<HashMap<TvdbId, String>, SonarrError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| SonarrError::CacheDir {
             source,
@@ -183,7 +184,7 @@ fn load_cache(path: &Path) -> Result<HashMap<i64, String>, SonarrError> {
         return Ok(HashMap::new());
     }
 
-    let data: HashMap<i64, String> =
+    let data: HashMap<TvdbId, String> =
         serde_json::from_slice(&bytes).map_err(|source| SonarrError::CacheParse {
             source,
             path: path.to_path_buf(),
@@ -200,12 +201,12 @@ pub enum SonarrError {
     Http(#[from] reqwest::Error),
     #[error("Sonarr api returned {status} for tvdb {tvdb_id}: {body}")]
     Api {
-        tvdb_id: i64,
+        tvdb_id: TvdbId,
         status: u16,
         body: String,
     },
     #[error("no Sonarr series title found for tvdb {tvdb_id}")]
-    NotFound { tvdb_id: i64 },
+    NotFound { tvdb_id: TvdbId },
     #[error("failed to read cached Sonarr titles at {path}")]
     CacheRead {
         #[source]
@@ -267,8 +268,8 @@ mod tests {
         let populated = dir.path().join("populated.json");
         std::fs::write(&populated, r#"{"42":"Naruto","99":"Bleach"}"#).unwrap();
         let cache = load_cache(&populated).unwrap();
-        assert_eq!(cache.get(&42), Some(&"Naruto".to_string()));
-        assert_eq!(cache.get(&99), Some(&"Bleach".to_string()));
+        assert_eq!(cache.get(&TvdbId(42)), Some(&"Naruto".to_string()));
+        assert_eq!(cache.get(&TvdbId(99)), Some(&"Bleach".to_string()));
 
         let bad = dir.path().join("bad.json");
         std::fs::write(&bad, "not json").unwrap();
@@ -283,13 +284,16 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let client = make_client(&dir);
 
-        assert_eq!(client.cached_title(42).await, None);
+        assert_eq!(client.cached_title(TvdbId(42)).await, None);
 
-        client.store_title(42, "Naruto").await.unwrap();
-        assert_eq!(client.cached_title(42).await, Some("Naruto".to_string()));
+        client.store_title(TvdbId(42), "Naruto").await.unwrap();
+        assert_eq!(
+            client.cached_title(TvdbId(42)).await,
+            Some("Naruto".to_string())
+        );
 
         let reloaded = load_cache(&dir.path().join(CACHE_FILENAME)).unwrap();
-        assert_eq!(reloaded.get(&42), Some(&"Naruto".to_string()));
+        assert_eq!(reloaded.get(&TvdbId(42)), Some(&"Naruto".to_string()));
     }
 
     #[tokio::test]
@@ -302,7 +306,7 @@ mod tests {
             let c = client.clone();
             handles.push(tokio::spawn(async move {
                 c.store_title(
-                    i,
+                    TvdbId(i),
                     &format!("Title {i} with some padding text to vary payload length {i}"),
                 )
                 .await
@@ -318,7 +322,7 @@ mod tests {
         assert_eq!(reloaded.len(), 50);
         for i in 0..50 {
             assert_eq!(
-                reloaded.get(&i),
+                reloaded.get(&TvdbId(i)),
                 Some(&format!(
                     "Title {i} with some padding text to vary payload length {i}"
                 ))
