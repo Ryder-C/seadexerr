@@ -13,14 +13,15 @@ use serde_json::json;
 use thiserror::Error;
 use tracing::{debug, info};
 
+use crate::ids::{TmdbId, TvdbId};
 use crate::service::{SearchService, ServiceError};
 use crate::torznab::{self, ChannelMetadata, TorznabItem};
 
 /// Timeout applied to every outbound HTTP client
 pub const TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Builds the shared HTTP client used by the AniList, releases.moe, Sonarr, and
-/// Radarr clients. `reqwest::Client` is `Arc`-backed, so callers clone this once
+/// Builds the shared HTTP client used by the releases.moe, Sonarr, and Radarr
+/// clients. `reqwest::Client` is `Arc`-backed, so callers clone this once
 /// and share the underlying connection pool, DNS resolver, and TLS config.
 ///
 /// The mappings client is intentionally excluded: it needs distinct connect and
@@ -148,16 +149,16 @@ impl TorznabQuery {
         }
     }
 
-    fn tvdb_identifier(&self) -> Option<i64> {
+    fn tvdb_identifier(&self) -> Option<TvdbId> {
         self.tvdb_id
             .as_deref()
-            .and_then(|value| value.trim().parse::<i64>().ok())
+            .and_then(|value| value.trim().parse::<TvdbId>().ok())
     }
 
-    fn tmdb_identifier(&self) -> Option<i64> {
+    fn tmdb_identifier(&self) -> Option<TmdbId> {
         self.tmdb_id
             .as_deref()
-            .and_then(|value| value.trim().parse::<i64>().ok())
+            .and_then(|value| value.trim().parse::<TmdbId>().ok())
     }
 
     fn season_number(&self) -> Option<u32> {
@@ -203,7 +204,7 @@ async fn torznab_handler(
             let season = query.season_number();
 
             if let (Some(tvdb_id), Some(season)) = (tvdb_id, season) {
-                info!(tvdb_id, season, "handling tv search");
+                info!(%tvdb_id, season, "handling tv search");
                 let (items, total) = state
                     .search_tv(tvdb_id, season, query.limit, query.offset)
                     .await?;
@@ -220,7 +221,7 @@ async fn torznab_handler(
         }
         TorznabOperation::MovieSearch => {
             if let Some(tmdb_id) = query.tmdb_identifier() {
-                info!(tmdb_id, "handling movie search");
+                info!(%tmdb_id, "handling movie search");
                 let (items, total) = state
                     .search_movie(tmdb_id, query.limit, query.offset)
                     .await?;
@@ -285,10 +286,6 @@ impl IntoResponse for HttpError {
                 ServiceError::Releases(_) => (
                     StatusCode::BAD_GATEWAY,
                     Cow::from("Failed to query releases.moe"),
-                ),
-                ServiceError::AniList(_) => (
-                    StatusCode::BAD_GATEWAY,
-                    Cow::from("Failed to query AniList"),
                 ),
                 ServiceError::Sonarr(_) => {
                     (StatusCode::BAD_GATEWAY, Cow::from("Failed to query Sonarr"))

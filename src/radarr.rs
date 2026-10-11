@@ -13,6 +13,7 @@ use tokio::task;
 use tracing::{trace, warn};
 
 use crate::config::RadarrConfig;
+use crate::ids::TmdbId;
 
 const CACHE_FILENAME: &str = "radarr_titles.json";
 
@@ -26,7 +27,7 @@ pub struct RadarrMovie {
 pub struct RadarrClient {
     http: Client,
     config: RadarrConfig,
-    cache: Arc<RwLock<HashMap<i64, RadarrMovie>>>,
+    cache: Arc<RwLock<HashMap<TmdbId, RadarrMovie>>>,
     persist_lock: Arc<Mutex<()>>,
     cache_path: PathBuf,
 }
@@ -46,9 +47,9 @@ impl RadarrClient {
         })
     }
 
-    pub async fn resolve_name(&self, tmdb_id: i64) -> Result<RadarrMovie, RadarrError> {
+    pub async fn resolve_name(&self, tmdb_id: TmdbId) -> Result<RadarrMovie, RadarrError> {
         if let Some(existing) = self.cached_movie(tmdb_id).await {
-            trace!(tmdb_id, "using cached Radarr title");
+            trace!(%tmdb_id, "using cached Radarr title");
             return Ok(existing);
         }
 
@@ -63,7 +64,7 @@ impl RadarrClient {
             pairs.append_pair("tmdbId", &tmdb_id.to_string());
         }
 
-        trace!(tmdb_id, url = %url, "requesting Radarr movie lookup");
+        trace!(%tmdb_id, url = %url, "requesting Radarr movie lookup");
 
         let response = self
             .http
@@ -79,14 +80,14 @@ impl RadarrClient {
                 status == reqwest::StatusCode::NOT_FOUND || body.contains("was not found");
             if is_not_found {
                 trace!(
-                    tmdb_id,
+                    %tmdb_id,
                     status = status.as_u16(),
                     "Radarr movie not found on TMDb"
                 );
                 return Err(RadarrError::NotFound { tmdb_id });
             }
             tracing::warn!(
-                tmdb_id,
+                %tmdb_id,
                 status = status.as_u16(),
                 body = %body,
                 "Radarr movie lookup returned non-success status"
@@ -105,7 +106,7 @@ impl RadarrClient {
         };
 
         let Some(year) = payload.year else {
-            trace!(tmdb_id, "skipping Radarr movie lookup due to missing year");
+            trace!(%tmdb_id, "skipping Radarr movie lookup due to missing year");
             return Err(RadarrError::NotFound { tmdb_id });
         };
 
@@ -118,12 +119,12 @@ impl RadarrClient {
         Ok(movie)
     }
 
-    async fn cached_movie(&self, tmdb_id: i64) -> Option<RadarrMovie> {
+    async fn cached_movie(&self, tmdb_id: TmdbId) -> Option<RadarrMovie> {
         let guard = self.cache.read().await;
         guard.get(&tmdb_id).cloned()
     }
 
-    async fn store_movie(&self, tmdb_id: i64, movie: &RadarrMovie) -> Result<(), RadarrError> {
+    async fn store_movie(&self, tmdb_id: TmdbId, movie: &RadarrMovie) -> Result<(), RadarrError> {
         {
             let mut guard = self.cache.write().await;
             guard.insert(tmdb_id, movie.clone());
@@ -174,7 +175,7 @@ struct MovieLookupEntry {
     year: Option<u32>,
 }
 
-fn load_cache(path: &Path) -> Result<HashMap<i64, RadarrMovie>, RadarrError> {
+fn load_cache(path: &Path) -> Result<HashMap<TmdbId, RadarrMovie>, RadarrError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| RadarrError::CacheDir {
             source,
@@ -197,7 +198,7 @@ fn load_cache(path: &Path) -> Result<HashMap<i64, RadarrMovie>, RadarrError> {
         return Ok(HashMap::new());
     }
 
-    let data: HashMap<i64, RadarrMovie> =
+    let data: HashMap<TmdbId, RadarrMovie> =
         serde_json::from_slice(&bytes).map_err(|source| RadarrError::CacheParse {
             source,
             path: path.to_path_buf(),
@@ -214,12 +215,12 @@ pub enum RadarrError {
     Http(#[from] reqwest::Error),
     #[error("Radarr api returned {status} for tmdb {tmdb_id}: {body}")]
     Api {
-        tmdb_id: i64,
+        tmdb_id: TmdbId,
         status: u16,
         body: String,
     },
     #[error("no Radarr movie title found for tmdb {tmdb_id}")]
-    NotFound { tmdb_id: i64 },
+    NotFound { tmdb_id: TmdbId },
     #[error("failed to read cached Radarr titles at {path}")]
     CacheRead {
         #[source]
@@ -292,7 +293,7 @@ mod tests {
         )
         .unwrap();
         let cache = load_cache(&populated).unwrap();
-        let entry = cache.get(&42).expect("entry must exist");
+        let entry = cache.get(&TmdbId(42)).expect("entry must exist");
         assert_eq!(entry.title, "Spirited Away");
         assert_eq!(entry.year, 2001);
 
@@ -309,19 +310,22 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let client = make_client(&dir);
 
-        assert!(client.cached_movie(42).await.is_none());
+        assert!(client.cached_movie(TmdbId(42)).await.is_none());
 
         client
-            .store_movie(42, &movie("Spirited Away", 2001))
+            .store_movie(TmdbId(42), &movie("Spirited Away", 2001))
             .await
             .unwrap();
 
-        let cached = client.cached_movie(42).await.expect("must be cached");
+        let cached = client
+            .cached_movie(TmdbId(42))
+            .await
+            .expect("must be cached");
         assert_eq!(cached.title, "Spirited Away");
         assert_eq!(cached.year, 2001);
 
         let reloaded = load_cache(&dir.path().join(CACHE_FILENAME)).unwrap();
-        let entry = reloaded.get(&42).expect("must persist");
+        let entry = reloaded.get(&TmdbId(42)).expect("must persist");
         assert_eq!(entry.title, "Spirited Away");
         assert_eq!(entry.year, 2001);
     }
@@ -336,10 +340,10 @@ mod tests {
             let c = client.clone();
             handles.push(tokio::spawn(async move {
                 c.store_movie(
-                    i,
+                    TmdbId(i),
                     &RadarrMovie {
                         title: format!("Movie {i} with padding text {i}"),
-                        year: 2000 + (i as u32),
+                        year: 2000 + i,
                     },
                 )
                 .await
@@ -354,9 +358,9 @@ mod tests {
         let reloaded = load_cache(&dir.path().join(CACHE_FILENAME)).unwrap();
         assert_eq!(reloaded.len(), 50);
         for i in 0..50 {
-            let item = reloaded.get(&i).unwrap();
+            let item = reloaded.get(&TmdbId(i)).unwrap();
             assert_eq!(item.title, format!("Movie {i} with padding text {i}"));
-            assert_eq!(item.year, 2000 + (i as u32));
+            assert_eq!(item.year, 2000 + i);
         }
     }
 }

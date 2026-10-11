@@ -31,8 +31,6 @@ struct EnvConfig {
     radarr_base_url: Url,
     ab_passkey: Option<String>,
     ab_passkey_file: Option<PathBuf>,
-    anilist_access_token: Option<String>,
-    anilist_access_token_file: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -43,7 +41,6 @@ pub struct AppConfig {
     pub radarr: Option<RadarrConfig>,
     pub scoring: ScoringConfig,
     pub ab_passkey: Option<String>,
-    pub anilist_access_token: Option<String>,
 }
 
 impl AppConfig {
@@ -68,18 +65,11 @@ impl TryFrom<EnvConfig> for AppConfig {
             radarr_base_url,
             ab_passkey,
             ab_passkey_file,
-            anilist_access_token,
-            anilist_access_token_file,
         } = env_config;
 
         let sonarr_api_key = resolve_secret("SONARR_API_KEY", sonarr_api_key, sonarr_api_key_file)?;
         let radarr_api_key = resolve_secret("RADARR_API_KEY", radarr_api_key, radarr_api_key_file)?;
         let ab_passkey = resolve_secret("AB_PASSKEY", ab_passkey, ab_passkey_file)?;
-        let anilist_access_token = resolve_secret(
-            "ANILIST_ACCESS_TOKEN",
-            anilist_access_token,
-            anilist_access_token_file,
-        )?;
 
         let listen_addr = SocketAddr::new(seadexerr_host, seadexerr_port);
 
@@ -106,7 +96,6 @@ impl TryFrom<EnvConfig> for AppConfig {
             radarr,
             scoring,
             ab_passkey,
-            anilist_access_token,
         })
     }
 }
@@ -183,8 +172,6 @@ mod tests {
             radarr_base_url: default_radarr_url(),
             ab_passkey: None,
             ab_passkey_file: None,
-            anilist_access_token: None,
-            anilist_access_token_file: None,
         }
     }
 

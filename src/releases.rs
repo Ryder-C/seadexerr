@@ -7,6 +7,8 @@ use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tracing::trace;
 
+use crate::ids::AniListId;
+
 const RELEASES_BASE_URL: &str = "https://releases.moe/api/";
 const PAGE_SIZE: usize = 100;
 
@@ -28,7 +30,10 @@ impl ReleasesClient {
         })
     }
 
-    pub async fn search_torrents(&self, anilist_id: i64) -> Result<Vec<Torrent>, ReleasesError> {
+    pub async fn search_torrents(
+        &self,
+        anilist_id: AniListId,
+    ) -> Result<Vec<Torrent>, ReleasesError> {
         let payload = self
             .fetch_entries_with(|params| {
                 params.push(("filter".to_string(), format!("alID={anilist_id}")));
@@ -38,7 +43,7 @@ impl ReleasesClient {
         let torrents = Self::entries_to_torrents(payload.items, self.ab_passkey.as_deref());
 
         trace!(
-            anilist_id,
+            %anilist_id,
             total = torrents.len(),
             "constructed torrent results from releases.moe entries"
         );
@@ -119,7 +124,7 @@ impl ReleasesClient {
     pub async fn resolve_anilist_ids_for_torrents(
         &self,
         torrent_ids: &[String],
-    ) -> Result<HashMap<String, i64>, ReleasesError> {
+    ) -> Result<HashMap<String, AniListId>, ReleasesError> {
         let mut result = HashMap::new();
         if torrent_ids.is_empty() {
             return Ok(result);
@@ -187,7 +192,7 @@ struct EntriesResponse {
 #[derive(Debug, Clone, Deserialize)]
 struct EntryRecord {
     #[serde(rename = "alID")]
-    al_id: Option<i64>,
+    al_id: Option<AniListId>,
     expand: Option<EntryExpand>,
 }
 
@@ -204,19 +209,21 @@ pub struct Torrent {
     pub source_url: String,
     pub info_hash: Option<String>,
     pub published: Option<OffsetDateTime>,
-    pub file_count: usize,
+    /// Number of full-length files: one for a movie (plus any extras), several
+    /// for a batch of episodes or movies.
+    pub feature_count: usize,
     pub size_bytes: u64,
     pub is_best: bool,
     pub dual_audio: bool,
     pub tags: Vec<String>,
-    pub anilist_id: Option<i64>,
+    pub anilist_id: Option<AniListId>,
     pub tracker: Tracker,
 }
 
 impl Torrent {
     fn from_record(
         record: TorrentRecord,
-        anilist_id: Option<i64>,
+        anilist_id: Option<AniListId>,
         tracker: Tracker,
         download_url: String,
     ) -> Self {
@@ -231,7 +238,7 @@ impl Torrent {
                 .as_deref()
                 .and_then(parse_timestamp)
                 .or_else(|| record.created.as_deref().and_then(parse_timestamp)),
-            file_count: record.files.len(),
+            feature_count: count_features(&record.files),
             size_bytes,
             is_best: record.is_best,
             dual_audio: record.dual_audio,
@@ -265,6 +272,16 @@ struct TorrentRecord {
 #[derive(Debug, Clone, Deserialize)]
 struct TorrentFile {
     length: u64,
+}
+
+/// Counts files at least half the size of the largest one, so extras like
+/// creditless OPs, trailers, subtitles and soundtracks aren't counted as features.
+fn count_features(files: &[TorrentFile]) -> usize {
+    let largest = files.iter().map(|file| file.length).max().unwrap_or(0);
+    files
+        .iter()
+        .filter(|file| file.length >= largest / 2)
+        .count()
 }
 
 fn parse_timestamp(value: &str) -> Option<OffsetDateTime> {
@@ -392,7 +409,7 @@ mod tests {
         TorrentFile { length }
     }
 
-    fn make_entry(al_id: Option<i64>, trs: Vec<TorrentRecord>) -> EntryRecord {
+    fn make_entry(al_id: Option<AniListId>, trs: Vec<TorrentRecord>) -> EntryRecord {
         EntryRecord {
             al_id,
             expand: Some(EntryExpand { trs }),
@@ -469,6 +486,19 @@ mod tests {
     }
 
     #[test]
+    fn counts_full_length_videos_as_features() {
+        // A movie with extras is a single feature.
+        let movie = [make_file(1000), make_file(50), make_file(200), make_file(1)];
+        assert_eq!(count_features(&movie), 1);
+
+        // A batch has several features of similar size.
+        let batch = [make_file(900), make_file(1000), make_file(30)];
+        assert_eq!(count_features(&batch), 2);
+
+        assert_eq!(count_features(&[]), 0);
+    }
+
+    #[test]
     fn builds_torrent_from_record() {
         let with_files = TorrentRecord {
             files: vec![make_file(100), make_file(200), make_file(300)],
@@ -528,7 +558,7 @@ mod tests {
     #[test]
     fn filters_entries_to_torrents() {
         let with_other_tracker = vec![make_entry(
-            Some(42),
+            Some(AniListId(42)),
             vec![
                 make_torrent_record("1"),
                 TorrentRecord {
@@ -542,7 +572,7 @@ mod tests {
         assert_eq!(torrents[0].id, "1");
 
         let with_incomplete_tag = vec![make_entry(
-            Some(42),
+            Some(AniListId(42)),
             vec![
                 make_torrent_record("1"),
                 TorrentRecord {
@@ -556,7 +586,7 @@ mod tests {
         assert_eq!(torrents[0].id, "1");
 
         let with_bad_url = vec![make_entry(
-            Some(42),
+            Some(AniListId(42)),
             vec![
                 make_torrent_record("1"),
                 TorrentRecord {
@@ -569,15 +599,18 @@ mod tests {
         assert_eq!(torrents.len(), 1);
         assert_eq!(torrents[0].id, "1");
 
-        let single = vec![make_entry(Some(12345), vec![make_torrent_record("1")])];
+        let single = vec![make_entry(
+            Some(AniListId(12345)),
+            vec![make_torrent_record("1")],
+        )];
         let torrents = ReleasesClient::entries_to_torrents(single, None);
-        assert_eq!(torrents[0].anilist_id, Some(12345));
+        assert_eq!(torrents[0].anilist_id, Some(AniListId(12345)));
     }
 
     #[test]
     fn ab_entries_included_with_passkey() {
         let entries = vec![make_entry(
-            Some(42),
+            Some(AniListId(42)),
             vec![
                 make_torrent_record("1"),
                 make_ab_torrent_record("70543", "1143533"),
@@ -597,7 +630,7 @@ mod tests {
     #[test]
     fn ab_entries_excluded_without_passkey() {
         let entries = vec![make_entry(
-            Some(42),
+            Some(AniListId(42)),
             vec![
                 make_torrent_record("1"),
                 make_ab_torrent_record("70543", "1143533"),

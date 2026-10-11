@@ -124,7 +124,7 @@ mod tests {
             source_url: String::new(),
             info_hash: None,
             published: None,
-            file_count: 0,
+            feature_count: 0,
             size_bytes: size,
             is_best: false,
             dual_audio: false,
