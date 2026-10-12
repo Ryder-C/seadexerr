@@ -207,7 +207,12 @@ pub fn render_feed(
         }
         write_attr(&mut writer, "seeders", &item.seeders.to_string())?;
         write_attr(&mut writer, "leechers", &item.leechers.to_string())?;
+        // Rare flag combination (Freeleech25 + DoubleUpload + Internal + Scene) so a
+        // custom format requiring all four only matches Seadexerr releases.
         write_attr(&mut writer, "downloadvolumefactor", "0.75")?;
+        write_attr(&mut writer, "uploadvolumefactor", "2")?;
+        write_attr(&mut writer, "tag", "internal")?;
+        write_attr(&mut writer, "tag", "scene")?;
 
         writer.write_event(Event::End(BytesEnd::new("item")))?;
     }
@@ -239,4 +244,41 @@ fn write_attr(
     attr.push_attribute(("value", value));
     writer.write_event(Event::Empty(attr))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feed_items_carry_seadex_indexer_flags() {
+        let metadata = ChannelMetadata {
+            title: "Seadexerr".to_string(),
+            description: "test".to_string(),
+            site_link: "http://localhost".to_string(),
+        };
+        let item = TorznabItem {
+            title: "Example".to_string(),
+            guid: "guid".to_string(),
+            link: "http://localhost/download".to_string(),
+            comments: None,
+            published: None,
+            size_bytes: 1,
+            info_hash: None,
+            seeders: 0,
+            leechers: 0,
+            categories: Vec::new(),
+        };
+
+        let xml = render_feed(&metadata, &[item], 0, 1).unwrap();
+
+        for attr in [
+            r#"<torznab:attr name="downloadvolumefactor" value="0.75"/>"#,
+            r#"<torznab:attr name="uploadvolumefactor" value="2"/>"#,
+            r#"<torznab:attr name="tag" value="internal"/>"#,
+            r#"<torznab:attr name="tag" value="scene"/>"#,
+        ] {
+            assert!(xml.contains(attr), "missing {attr} in:\n{xml}");
+        }
+    }
 }
