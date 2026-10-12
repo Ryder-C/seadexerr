@@ -1,7 +1,6 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
-use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::io::{BufReader, ErrorKind, Read};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -12,6 +11,7 @@ use reqwest::{
 };
 use serde::de::IgnoredAny;
 use tokio::fs;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use tokio::task;
 use tracing::{debug, trace, warn};
@@ -186,17 +186,27 @@ impl PlexAniBridgeMappings {
             .and_then(|value| value.to_str().ok())
             .map(|value| value.to_owned());
 
-        let bytes = response.bytes().await.context(format!(
-            "failed to download plexanibridge mappings from {SOURCE_URL}"
-        ))?;
-
-        // Offload heavy JSON deserialisation and index build to a blocking thread so the
-        // async runtime worker threads aren't stalled by CPU work. `Bytes` is cheap to
-        // clone (reference-counted), so the parser and the on-disk write below share a
-        // single buffer instead of holding two copies of the whole file.
-        let index = {
-            let bytes = bytes.clone();
-            task::spawn_blocking(move || Self::build_index(&bytes)).await??
+        // Stream the body to a temp file rather than buffering the whole document in
+        // memory, then parse from disk. The temp file is only renamed over the cache once
+        // it parses, so a bad download never replaces a good cache.
+        let tmp_path = self.path.with_added_extension("tmp");
+        let result = async {
+            Self::download_to(response, &tmp_path).await?;
+            let path = tmp_path.clone();
+            let index = task::spawn_blocking(move || Self::build_index_from_path(&path)).await??;
+            fs::rename(&tmp_path, &self.path).await.context(format!(
+                "failed to write mapping file at {}",
+                self.path.display()
+            ))?;
+            Ok::<_, anyhow::Error>(index)
+        }
+        .await;
+        let index = match result {
+            Ok(index) => index,
+            Err(err) => {
+                let _ = fs::remove_file(&tmp_path).await;
+                return Err(err);
+            }
         };
         let series = index.tvdb_to_entries.len();
         let entries = index
@@ -205,16 +215,6 @@ impl PlexAniBridgeMappings {
             .map(|group| group.len())
             .sum::<usize>();
         let index = Arc::new(index);
-
-        {
-            let path = self.path.clone();
-            task::spawn_blocking(move || crate::fs::write_atomic(&path, &bytes))
-                .await?
-                .context(format!(
-                    "failed to write mapping file at {}",
-                    self.path.display()
-                ))?;
-        }
 
         if let Some(etag) = new_etag.clone() {
             let path = etag_path.clone();
@@ -330,12 +330,8 @@ impl PlexAniBridgeMappings {
             }
         }
 
-        let contents = fs::read(&self.path).await.context(format!(
-            "failed to read mapping file at {}",
-            self.path.display()
-        ))?;
-
-        let index = task::spawn_blocking(move || Self::build_index(&contents)).await??;
+        let path = self.path.clone();
+        let index = task::spawn_blocking(move || Self::build_index_from_path(&path)).await??;
         let series = index.tvdb_to_entries.len();
         let entries = index
             .tvdb_to_entries
@@ -369,10 +365,37 @@ impl PlexAniBridgeMappings {
         path
     }
 
-    fn build_index(bytes: &[u8]) -> Result<MappingIndex> {
-        // Stream the cache file straight into the index
-        // Saves alot of memory over deserializing the whole document into a `serde_json::Value`
-        let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    /// Writes the response body to `path` chunk by chunk and syncs it to disk.
+    async fn download_to(mut response: reqwest::Response, path: &Path) -> Result<()> {
+        let mut file = fs::File::create(path).await.context(format!(
+            "failed to write mapping file at {}",
+            path.display()
+        ))?;
+        while let Some(chunk) = response.chunk().await.context(format!(
+            "failed to download plexanibridge mappings from {SOURCE_URL}"
+        ))? {
+            file.write_all(&chunk).await.context(format!(
+                "failed to write mapping file at {}",
+                path.display()
+            ))?;
+        }
+        file.sync_all().await.context(format!(
+            "failed to write mapping file at {}",
+            path.display()
+        ))?;
+        Ok(())
+    }
+
+    fn build_index_from_path(path: &Path) -> Result<MappingIndex> {
+        let file = std::fs::File::open(path)
+            .context(format!("failed to read mapping file at {}", path.display()))?;
+        Self::build_index(BufReader::new(file))
+    }
+
+    fn build_index(reader: impl Read) -> Result<MappingIndex> {
+        // Stream the file straight into the index without ever holding the whole
+        // document in memory, either as raw bytes or as a `serde_json::Value`.
+        let mut deserializer = serde_json::Deserializer::from_reader(reader);
         let index =
             serde::Deserializer::deserialize_map(&mut deserializer, IndexBuilder::default())
                 .context("failed to deserialise plexanibridge mapping file")?;
@@ -509,7 +532,7 @@ impl<'de> serde::de::Visitor<'de> for IndexBuilder {
     where
         A: serde::de::MapAccess<'de>,
     {
-        while let Some(CowStr(source_key)) = map.next_key::<CowStr<'_>>()? {
+        while let Some(source_key) = map.next_key::<String>()? {
             let anilist_id = if source_key.starts_with('$') {
                 None
             } else {
@@ -574,49 +597,11 @@ impl<'de> serde::de::Visitor<'de> for TargetsSeed<'_> {
     where
         A: serde::de::MapAccess<'de>,
     {
-        while let Some(CowStr(target_key)) = map.next_key::<CowStr<'_>>()? {
+        while let Some(target_key) = map.next_key::<String>()? {
             map.next_value::<IgnoredAny>()?;
             self.builder.record_target(self.anilist_id, &target_key);
         }
         Ok(())
-    }
-}
-
-/// `Cow<str>` that borrows from the input when the deserializer allows it.
-/// serde's own `Cow` impl always allocates an owned copy.
-struct CowStr<'de>(Cow<'de, str>);
-
-impl<'de> serde::Deserialize<'de> for CowStr<'de> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct CowStrVisitor;
-
-        impl<'de> serde::de::Visitor<'de> for CowStrVisitor {
-            type Value = CowStr<'de>;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("a string")
-            }
-
-            fn visit_borrowed_str<E: serde::de::Error>(
-                self,
-                v: &'de str,
-            ) -> Result<Self::Value, E> {
-                Ok(CowStr(Cow::Borrowed(v)))
-            }
-
-            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                Ok(CowStr(Cow::Owned(v.to_owned())))
-            }
-
-            fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Self::Value, E> {
-                Ok(CowStr(Cow::Owned(v)))
-            }
-        }
-
-        deserializer.deserialize_str(CowStrVisitor)
     }
 }
 
@@ -667,7 +652,7 @@ mod tests {
             }
         }"#;
 
-        let index = PlexAniBridgeMappings::build_index(raw).expect("index should build");
+        let index = PlexAniBridgeMappings::build_index(&raw[..]).expect("index should build");
 
         // tvdb_show targets are indexed both directions, keyed by season scope.
         assert_eq!(index.tvdb_to_entries.len(), 2);
